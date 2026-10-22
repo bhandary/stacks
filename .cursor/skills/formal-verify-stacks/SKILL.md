@@ -149,7 +149,7 @@ Call sites that **depend** on the promise but are not executed by the harness: `
 
 ## Code sync
 
-Last confirmed at commit `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418` (`src/lib/isbn.ts` unchanged since that commit; this skill and `scripts/formal/isbn-verify.mts` were added on top).
+Last confirmed at commit `5f04ff61ab0b3a135ba2527c154484fa8ddd996a` (`src/lib/isbn.ts` still matches `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418`; this commit is the harness and skill).
 
 **Move this SHA forward only after** `npm run formal:isbn` passes and you have read `src/lib/isbn.ts` plus the harness properties and confirmed they still describe that commit's functions. Do not bump the SHA because a doc-only or unrelated commit landed.
 

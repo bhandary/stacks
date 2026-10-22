@@ -10,7 +10,8 @@
     "verify:doctor": "bash scripts/verify/doctor.sh",
     "verify:launch": "bash scripts/verify/launch.sh",
     "verify": "node scripts/verify/drive.mjs",
-    "verify:cleanup": "bash scripts/verify/cleanup.sh"
+    "verify:cleanup": "bash scripts/verify/cleanup.sh",
+    "formal:isbn": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/formal/isbn-verify.mts"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",

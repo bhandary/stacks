@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+artifacts
+playwright-report
+test-results
+scripts/verify/fixtures
+*.md
+.cursor

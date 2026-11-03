@@ -37,7 +37,7 @@ There is **no project-installable TypeScript program verifier** (no Dafny/CBMC/L
 
 The check imports the **real** functions from `src/lib/isbn.ts` with Node's type stripper (Node 22+, already how this repo runs). No extra package. Oracle is the ISO 2108 / GS1 **weighted-sum ≡ 0** rule, written in `scripts/formal/isbn-verify.mts` as `isbn10Spec` / `isbn13Spec`, not a copy of the implementation's "compute expected check, then compare" loop.
 
-Pinned runner: **Node 22** (`--experimental-strip-types`). Last run on Node v22.23.4. Node 20 and earlier cannot import the `.ts` file this way; do not rewrite the functions in the harness to dodge that.
+Pinned runner: **Node 22** (`--experimental-strip-types`). Last run on Node v22.23.4. Node 20 and earlier cannot import the `.ts` file this way; do not rewrite the functions in the harness to dodge that. `scripts/formal` is excluded from tsconfig; run `npm run build` after changing the harness.
 
 ## One command
 

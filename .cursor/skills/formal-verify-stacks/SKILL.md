@@ -92,6 +92,7 @@ Not exhaustive over all 10⁹ ISBN-10 bodies or all 10¹² ISBN-13 bodies.
 - `normalizeBookInput`'s fallback `normalizeIsbn(input.isbn) || digitsKeep(input.isbn)` — **invalid ISBNs are still stored as stripped characters**. The harness does not import `books.ts` (extensionless `./db` import and a `pg` pool). If you tighten that fallback, add a new property and import the real function through a runner that can resolve it
 - Camera decoding (`BarcodeDetector`, ZXing) and whether a frame is an EAN-13
 - `yearFrom` / cover URL rewriting in `lookup.ts`
+- Backup export/restore (`src/lib/backup.ts` and `/api/backup`). A backup copies stored ISBN strings as text and does not call `normalizeIsbn`. It is outside this check.
 
 ## Real bug vs modeling error
 

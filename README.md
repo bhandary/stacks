@@ -34,6 +34,7 @@ The app listens on `http://localhost:43177`. Open that on a phone or a narrow de
 - Look up an ISBN and import title, authors, category, year, publisher, page count, cover, and description
 - Scan an ISBN with the camera (`BarcodeDetector`, with a ZXing fallback) or type it if the camera is unavailable
 - Persist everything in Postgres
+- Download a versioned backup of the shelf, or restore one after an explicit confirmation ([BACKUP.md](BACKUP.md))
 
 ## Deploy on Railway
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MoreHorizontal, Plus, ScanBarcode, Search } from "lucide-react";
+import { BackupRestore } from "@/components/backup-restore";
 import { BookCard } from "@/components/book-card";
 import { BookForm } from "@/components/book-form";
 import { ScanIsbn } from "@/components/scan-isbn";
@@ -28,6 +29,7 @@ export function Library() {
   const [sort, setSort] = useState<SortKey>("newest");
   const [formOpen, setFormOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [editing, setEditing] = useState<Book | null>(null);
   const [preset, setPreset] = useState<BookInput | null>(null);
   const [importing, setImporting] = useState(false);
@@ -151,6 +153,12 @@ export function Library() {
             <MoreHorizontal className="size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              data-testid="backup-restore-menu"
+              onClick={() => setBackupOpen(true)}
+            >
+              Backup & Restore
+            </DropdownMenuItem>
             <DropdownMenuItem
               data-testid="remove-examples-menu"
               disabled={!examples}
@@ -308,6 +316,11 @@ export function Library() {
         open={scanOpen}
         onClose={() => setScanOpen(false)}
         onDetected={(isbn) => void importIsbn(isbn)}
+      />
+      <BackupRestore
+        open={backupOpen}
+        onOpenChange={setBackupOpen}
+        onRestored={() => void load()}
       />
     </div>
   );

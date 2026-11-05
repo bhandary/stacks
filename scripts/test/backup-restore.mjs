@@ -1,0 +1,610 @@
+#!/usr/bin/env node
+/**
+ * Disposable-database proof for Stacks backup/restore.
+ * Creates two throwaway databases, never the default `stacks` database.
+ */
+import { spawn } from "node:child_process";
+import { strict as assert } from "node:assert";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import pg from "pg";
+import { chromium } from "playwright";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const PORT = 43182;
+const BASE = `http://127.0.0.1:${PORT}`;
+const ADMIN_URL = "postgres://stacks:stacks@127.0.0.1:5432/postgres";
+const SRC_DB = "stacks_bk_src_4b28";
+const DST_DB = "stacks_bk_dst_4b28";
+const NEXT_BIN = path.join(ROOT, "node_modules", ".bin", "next");
+const ARTIFACTS = path.join(ROOT, "artifacts", "backup-restore");
+const CURSOR_ARTIFACTS = "/opt/cursor/artifacts";
+const LOG_PATH = "/tmp/stacks-backup-next.log";
+const MAX_BACKUP_BYTES = 8 * 1024 * 1024;
+
+const BOOK_FIELDS = [
+  "id",
+  "title",
+  "author",
+  "category",
+  "status",
+  "rating",
+  "notes",
+  "isbn",
+  "year",
+  "publisher",
+  "pageCount",
+  "coverUrl",
+  "description",
+  "isExample",
+  "createdAt",
+  "updatedAt",
+];
+
+const BOOK_A = {
+  id: "11111111-1111-4111-8111-111111111111",
+  title: "Window Seat Atlas",
+  author: "Ada Lovelace",
+  category: "Travel",
+  status: "reading",
+  rating: 4,
+  notes: "A token of appreciation\nand a second line",
+  isbn: "0-451-52493-4",
+  year: 42,
+  publisher: "O'Reilly",
+  pageCount: 0,
+  coverUrl: "https://example.com/covers/atlas.jpg",
+  description: "Notes about the shelf.",
+  isExample: false,
+  createdAt: "2020-05-06T07:08:09.010Z",
+  updatedAt: "2021-06-07T08:09:10.011Z",
+};
+
+const BOOK_B = {
+  id: "22222222-2222-4222-8222-222222222222",
+  title: "Empty Fields",
+  author: "",
+  category: "",
+  status: "read",
+  rating: null,
+  notes: "",
+  isbn: "",
+  year: null,
+  publisher: "",
+  pageCount: null,
+  coverUrl: "",
+  description: "",
+  isExample: true,
+  createdAt: "2019-01-02T03:04:05.006Z",
+  updatedAt: "2019-01-02T03:04:05.006Z",
+};
+
+const evidence = { steps: [], base: BASE, databases: [SRC_DB, DST_DB] };
+
+function log(name, detail) {
+  evidence.steps.push({ name, detail, at: new Date().toISOString() });
+  console.log(`• ${name}: ${detail}`);
+}
+
+function dbUrl(name) {
+  return `postgres://stacks:stacks@127.0.0.1:5432/${name}`;
+}
+
+function canonical(backup) {
+  return {
+    books: backup.books
+      .map((book) => {
+        const next = {};
+        for (const field of BOOK_FIELDS) next[field] = book[field];
+        return next;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    appState: backup.appState,
+  };
+}
+
+function emptyBackup() {
+  return {
+    version: "1.0.0",
+    createdAt: "2024-01-01T00:00:00.000Z",
+    books: [],
+    appState: {},
+    metadata: { bookCount: 0, note: "empty test backup", omittedSecretKeys: [] },
+  };
+}
+
+let server = null;
+let serverLog = null;
+
+async function adminQuery(sql) {
+  const client = new pg.Client({ connectionString: ADMIN_URL });
+  await client.connect();
+  try {
+    return await client.query(sql);
+  } finally {
+    await client.end();
+  }
+}
+
+async function recreateDatabase(name) {
+  if (!/^[a-z0-9_]+$/.test(name)) throw new Error(`unsafe database name ${name}`);
+  await adminQuery(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+  await adminQuery(`CREATE DATABASE ${name} OWNER stacks`);
+}
+
+async function dropDatabase(name) {
+  if (!/^[a-z0-9_]+$/.test(name)) return;
+  await adminQuery(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+}
+
+async function withDb(url, fn) {
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    return await fn(client);
+  } finally {
+    await client.end();
+  }
+}
+
+async function seedSource() {
+  await withDb(dbUrl(SRC_DB), async (client) => {
+    const books = [BOOK_A, BOOK_B];
+    for (const book of books) {
+      await client.query(
+        `INSERT INTO books (
+          id, title, author, category, status, rating, notes, isbn, year,
+          publisher, page_count, cover_url, description, is_example, created_at, updated_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        [
+          book.id,
+          book.title,
+          book.author,
+          book.category,
+          book.status,
+          book.rating,
+          book.notes,
+          book.isbn,
+          book.year,
+          book.publisher,
+          book.pageCount,
+          book.coverUrl,
+          book.description,
+          book.isExample,
+          book.createdAt,
+          book.updatedAt,
+        ],
+      );
+    }
+    await client.query(
+      "INSERT INTO app_state (key, value) VALUES ('examples_seeded', '1'), ('shelf_label', 'Window seat'), ('api_token', 'hunter2')",
+    );
+  });
+}
+
+async function stopServer() {
+  if (!server?.pid) return;
+  const pid = server.pid;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      server.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  const started = Date.now();
+  while (Date.now() - started < 15_000) {
+    try {
+      await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(400) });
+    } catch {
+      server = null;
+      serverLog?.end();
+      serverLog = null;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+  server = null;
+}
+
+async function startServer(databaseUrl) {
+  await stopServer();
+  mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+  serverLog = createWriteStream(LOG_PATH, { flags: "a" });
+  serverLog.write(`\n--- ${new Date().toISOString()} ${databaseUrl} ---\n`);
+  server = spawn(NEXT_BIN, ["dev", "-H", "127.0.0.1", "-p", String(PORT)], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      PGSSL: "0",
+      PORT: String(PORT),
+    },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  server.stdout?.pipe(serverLog);
+  server.stderr?.pipe(serverLog);
+  let exitCode = null;
+  server.on("exit", (code) => {
+    exitCode = code;
+  });
+
+  const started = Date.now();
+  while (Date.now() - started < 180_000) {
+    if (exitCode !== null) {
+      throw new Error(`Next exited ${exitCode}. Log: ${LOG_PATH}`);
+    }
+    try {
+      const response = await fetch(`${BASE}/api/health`);
+      if (response.ok) {
+        const body = await response.json();
+        if (body.ok && body.db) return;
+      }
+    } catch {
+      // still booting
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Server did not become healthy. Log: ${LOG_PATH}`);
+}
+
+async function request(pathname, options = {}) {
+  const response = await fetch(`${BASE}${pathname}`, options);
+  const text = await response.text();
+  let data = text;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    // leave text in place
+  }
+  return { status: response.status, data, text };
+}
+
+async function getBackup() {
+  const result = await request("/api/backup");
+  assert.equal(result.status, 200, `backup download failed: ${result.text}`);
+  return result.data;
+}
+
+async function restore(backup, { confirm = true, replace = false } = {}) {
+  return request("/api/backup/restore", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirm, replace, backup }),
+  });
+}
+
+async function shot(page, name) {
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const dest = path.join(ARTIFACTS, name);
+  await page.screenshot({ path: dest, fullPage: true });
+  if (existsSync(CURSOR_ARTIFACTS)) {
+    await copyFile(dest, path.join(CURSOR_ARTIFACTS, name));
+  }
+  log("screenshot", dest);
+}
+
+async function main() {
+  assert.match(
+    readFileSync(path.join(ROOT, "src/lib/backup.ts"), "utf8"),
+    /MAX_BACKUP_BYTES = 8 \* 1024 \* 1024/,
+  );
+
+  await recreateDatabase(SRC_DB);
+  await recreateDatabase(DST_DB);
+  log("databases", `created ${SRC_DB} and ${DST_DB}`);
+
+  await startServer(dbUrl(SRC_DB));
+  log("server", `source ${BASE}`);
+  await seedSource();
+
+  const exported = await getBackup();
+  const sourceSnapshot = canonical(exported);
+  assert.equal(exported.version, "1.0.0");
+  assert.equal(exported.metadata.bookCount, 2);
+  assert.deepEqual(exported.metadata.omittedSecretKeys, ["api_token"]);
+  assert.equal(JSON.stringify(exported).includes("hunter2"), false);
+  assert.equal(JSON.stringify(exported).includes("DATABASE_URL"), false);
+  assert.deepEqual(sourceSnapshot.books, [BOOK_B, BOOK_A].sort((a, b) => a.id.localeCompare(b.id)));
+  assert.deepEqual(sourceSnapshot.appState, {
+    examples_seeded: "1",
+    shelf_label: "Window seat",
+  });
+  log("export", "2 books, shelf_label kept, api_token omitted");
+
+  const secretStillThere = await withDb(dbUrl(SRC_DB), (client) =>
+    client.query("SELECT value FROM app_state WHERE key = 'api_token'"),
+  );
+  assert.equal(secretStillThere.rows[0]?.value, "hunter2");
+
+  const noConfirm = await restore(exported, { confirm: false, replace: true });
+  assert.equal(noConfirm.status, 400);
+  const refused = await restore(exported, { confirm: true, replace: false });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(canonical(await getBackup()), sourceSnapshot);
+  log("source-safety", "missing confirmation and non-empty restore changed nothing");
+
+  await stopServer();
+  await startServer(dbUrl(DST_DB));
+  log("server", `clean destination ${BASE}`);
+
+  const emptyResult = await restore(emptyBackup(), { confirm: true, replace: false });
+  assert.equal(emptyResult.status, 200, JSON.stringify(emptyResult.data));
+  assert.equal(emptyResult.data.restored.books, 0);
+  const emptyExported = await getBackup();
+  assert.deepEqual(canonical(emptyExported), { books: [], appState: {} });
+  const emptyCheck = await request("/api/backup/validate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(emptyBackup()),
+  });
+  assert.equal(emptyCheck.status, 200);
+  assert.equal(emptyCheck.data.valid, true);
+  assert.ok(emptyCheck.data.warnings.some((warning) => /zero books/i.test(warning)));
+  log("empty", "empty backup restored into an empty database and warned");
+
+  const badVersion = structuredClone(exported);
+  badVersion.version = "9.9.9";
+  const badVersionResult = await restore(badVersion, { confirm: true, replace: true });
+  assert.equal(badVersionResult.status, 400);
+  assert.match(JSON.stringify(badVersionResult.data), /Unsupported backup version/);
+  assert.deepEqual(canonical(await getBackup()), { books: [], appState: {} });
+
+  const malformed = await request("/api/backup/restore", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{",
+  });
+  assert.equal(malformed.status, 400);
+  assert.match(malformed.data.error, /not valid JSON/);
+
+  const restored = await restore(exported, { confirm: true, replace: false });
+  assert.equal(restored.status, 200, JSON.stringify(restored.data));
+  assert.equal(restored.data.restored.books, 2);
+  assert.equal(restored.data.restored.appState, 2);
+  const destinationSnapshot = canonical(await getBackup());
+  assert.deepEqual(destinationSnapshot, sourceSnapshot);
+  log("round-trip", "clean-database restore matched every book field and app_state key");
+
+  const cases = [
+    ["unsupported version", badVersion, 400],
+    [
+      "duplicate id",
+      {
+        ...exported,
+        books: [exported.books[0], { ...exported.books[0] }],
+        metadata: { ...exported.metadata, bookCount: 2 },
+      },
+      400,
+    ],
+    [
+      "string rating",
+      {
+        ...exported,
+        books: exported.books.map((book, index) =>
+          index === 0 ? { ...book, rating: "4" } : book,
+        ),
+      },
+      400,
+    ],
+    [
+      "unknown field",
+      {
+        ...exported,
+        books: exported.books.map((book, index) =>
+          index === 0 ? { ...book, shelfPosition: 3 } : book,
+        ),
+      },
+      400,
+    ],
+    [
+      "secret key",
+      { ...exported, appState: { ...exported.appState, api_token: "hunter2" } },
+      400,
+    ],
+  ];
+
+  for (const [name, backup, status] of cases) {
+    const result = await restore(backup, { confirm: true, replace: true });
+    assert.equal(result.status, status, `${name}: ${JSON.stringify(result.data)}`);
+    assert.deepEqual(canonical(await getBackup()), destinationSnapshot, name);
+    log("rejected", `${name} -> ${status}, shelf unchanged`);
+  }
+
+  const blocked = await restore(exported, { confirm: true, replace: false });
+  assert.equal(blocked.status, 409);
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("non-empty", "restore without replace was refused");
+
+  const huge = JSON.stringify({ pad: "a".repeat(MAX_BACKUP_BYTES + 1) });
+  const tooBig = await request("/api/backup/restore", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: huge,
+  });
+  assert.equal(tooBig.status, 413, JSON.stringify(tooBig.data));
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("size", "oversized file rejected");
+
+  const [first, second] = await Promise.all([
+    restore(exported, { confirm: true, replace: true }),
+    restore(exported, { confirm: true, replace: true }),
+  ]);
+  assert.ok([200, 409].includes(first.status), JSON.stringify(first.data));
+  assert.ok([200, 409].includes(second.status), JSON.stringify(second.data));
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("duplicate-submit", `parallel restores returned ${first.status} and ${second.status} without duplicating rows`);
+
+  await withDb(dbUrl(DST_DB), async (client) => {
+    await client.query(`
+      CREATE OR REPLACE FUNCTION stacks_backup_fail_marker() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.title = 'ROLLBACK-TEST' THEN
+          RAISE EXCEPTION 'injected restore failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await client.query(`
+      CREATE TRIGGER stacks_backup_fail_marker
+      BEFORE INSERT ON books
+      FOR EACH ROW
+      EXECUTE FUNCTION stacks_backup_fail_marker()
+    `);
+  });
+
+  const crashing = structuredClone(exported);
+  crashing.books = [
+    {
+      ...BOOK_A,
+      id: "33333333-3333-4333-8333-333333333333",
+      title: "SHOULD-NOT-PERSIST",
+    },
+    {
+      ...BOOK_B,
+      id: "44444444-4444-4444-8444-444444444444",
+      title: "ROLLBACK-TEST",
+    },
+  ];
+  crashing.metadata = { ...crashing.metadata, bookCount: 2, omittedSecretKeys: [] };
+  const crashed = await restore(crashing, { confirm: true, replace: true });
+  assert.equal(crashed.status, 500, JSON.stringify(crashed.data));
+  assert.match(String(crashed.data.error), /injected restore failure/);
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  const leaked = await withDb(dbUrl(DST_DB), (client) =>
+    client.query(
+      "SELECT COUNT(*)::int AS n FROM books WHERE title IN ('SHOULD-NOT-PERSIST', 'ROLLBACK-TEST')",
+    ),
+  );
+  assert.equal(Number(leaked.rows[0].n), 0);
+  log("rollback", "insert failure rolled back the delete and the partial insert");
+
+  await withDb(dbUrl(DST_DB), async (client) => {
+    await client.query("DROP TRIGGER stacks_backup_fail_marker ON books");
+    await client.query("DROP FUNCTION stacks_backup_fail_marker()");
+  });
+
+  await runBrowser(exported);
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("browser", "download, invalid file, confirmation, and replace left the same shelf");
+
+  const wiped = await restore(emptyBackup(), { confirm: true, replace: true });
+  assert.equal(wiped.status, 200, JSON.stringify(wiped.data));
+  assert.deepEqual(canonical(await getBackup()), { books: [], appState: {} });
+  log("empty-replace", "explicit replace with an empty backup cleared the shelf");
+
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const evidencePath = path.join(ARTIFACTS, "evidence.json");
+  writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+  if (existsSync(CURSOR_ARTIFACTS)) {
+    writeFileSync(path.join(CURSOR_ARTIFACTS, "backup-restore-evidence.json"), JSON.stringify(evidence, null, 2));
+  }
+  console.log(`\nEvidence: ${evidencePath}`);
+}
+
+async function runBrowser(exported) {
+  process.env.DISPLAY ||= ":1";
+  const browser = await chromium.launch({
+    channel: "chrome",
+    headless: false,
+    args: ["--no-sandbox"],
+  });
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    acceptDownloads: true,
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20_000);
+  const dir = await mkdtemp(path.join(tmpdir(), "stacks-backup-"));
+  try {
+    await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.getByTestId("book-card").filter({ hasText: "Window Seat Atlas" }).waitFor();
+    await page.getByTestId("counts").filter({ hasText: "2 books" }).waitFor();
+    log("browser-shelf", await page.getByTestId("counts").innerText());
+
+    await page.getByTestId("shelf-menu").click();
+    await page.getByTestId("backup-restore-menu").click();
+    await page.getByTestId("backup-dialog").waitFor();
+
+    const badJson = path.join(dir, "not-json.json");
+    await writeFile(badJson, "{");
+    await page.getByTestId("backup-file").setInputFiles(badJson);
+    await page.getByTestId("backup-error").waitFor();
+    await shot(page, "01_invalid_file.png");
+    assert.equal(await page.getByTestId("backup-confirm").count(), 0);
+
+    const badVersion = path.join(dir, "bad-version.json");
+    await writeFile(badVersion, JSON.stringify({ ...exported, version: "9.9.9" }));
+    await page.getByTestId("backup-file").setInputFiles(badVersion);
+    await page.getByTestId("backup-invalid").waitFor();
+    assert.match(await page.getByTestId("backup-invalid").innerText(), /Unsupported backup version/);
+    assert.equal(await page.getByTestId("backup-confirm").count(), 0);
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByTestId("backup-download").click(),
+    ]);
+    const downloaded = path.join(dir, "downloaded.json");
+    await download.saveAs(downloaded);
+    const downloadedJson = JSON.parse(readFileSync(downloaded, "utf8"));
+    assert.equal(downloadedJson.books.length, 2);
+    assert.equal(JSON.stringify(downloadedJson).includes("hunter2"), false);
+    log("browser-download", download.suggestedFilename());
+
+    await page.getByTestId("backup-file").setInputFiles(downloaded);
+    await page.getByTestId("backup-preview").waitFor();
+    await page.getByTestId("backup-replace-confirm").waitFor();
+    assert.equal(await page.getByTestId("backup-confirm").isDisabled(), true);
+    await shot(page, "02_confirm_required.png");
+    await page.getByTestId("backup-replace-confirm").check();
+    assert.equal(await page.getByTestId("backup-confirm").isEnabled(), true);
+    await page.getByTestId("backup-confirm").click();
+    await page.getByTestId("backup-success").waitFor();
+    await shot(page, "03_restore_success.png");
+    assert.match(await page.getByTestId("backup-success").innerText(), /2 books/);
+
+    await page.getByRole("button", { name: "Close" }).click();
+    await page.getByTestId("backup-dialog").waitFor({ state: "hidden" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByTestId("book-card").filter({ hasText: "Window Seat Atlas" }).waitFor();
+    await page.getByTestId("book-card").filter({ hasText: "Empty Fields" }).waitFor();
+    await shot(page, "04_shelf_after_reload.png");
+  } finally {
+    await browser.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+try {
+  await main();
+  console.log("\nPASS backup-restore");
+} catch (error) {
+  console.error("\nFAIL backup-restore");
+  console.error(error);
+  try {
+    const tail = readFileSync(LOG_PATH, "utf8").split("\n").slice(-80).join("\n");
+    console.error("\nServer log tail:\n", tail);
+  } catch {
+    // no log yet
+  }
+  process.exitCode = 1;
+} finally {
+  await stopServer();
+  await dropDatabase(SRC_DB).catch((error) => console.error("drop source", error.message));
+  await dropDatabase(DST_DB).catch((error) => console.error("drop dest", error.message));
+}

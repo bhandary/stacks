@@ -26,6 +26,8 @@ The app listens on `http://localhost:43177`. Open that on a phone or a narrow de
 
 `npm start` after `npm run build` binds `0.0.0.0` and honors `PORT` (Railway sets this).
 
+ISBN lookup uses Open Library and Google Books. Google Books is optional-key: if `GOOGLE_BOOKS_API_KEY` is unset, the request stays keyless and shares Google's anonymous quota (often HTTP 429). Set the variable in `.env.local` (see `.env.example`) to append `&key=` on that request. Create a key in [Google Cloud Console](https://console.cloud.google.com/): enable the **Books API**, then create an **API key**. Open Library still fills gaps either way.
+
 ## What you can do
 
 - Search title, author, or ISBN

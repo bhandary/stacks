@@ -7,21 +7,49 @@ type PartialLookup = Partial<Omit<BookLookup, "isbn" | "sources">> & {
   sources?: string[];
 };
 
+function fetchLogTarget(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return "(invalid-url)";
+  }
+}
+
+function redactSecrets(text: string): string {
+  const key = process.env.GOOGLE_BOOKS_API_KEY;
+  if (!key) return text;
+  return text.split(key).join("[redacted]").split(encodeURIComponent(key)).join("[redacted]");
+}
+
 async function fetchJson(url: string): Promise<unknown | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_MS);
+  const target = fetchLogTarget(url);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: { Accept: "application/json" },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.warn(`fetch ${target} failed: HTTP ${response.status}`);
+      return null;
+    }
     return await response.json();
-  } catch {
+  } catch (error) {
+    const message = redactSecrets(error instanceof Error ? error.message : String(error));
+    console.warn(`fetch ${target} error: ${message}`);
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function googleBooksUrl(isbn: string): string {
+  const base = `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`;
+  const key = process.env.GOOGLE_BOOKS_API_KEY;
+  if (!key) return base;
+  return `${base}&key=${encodeURIComponent(key)}`;
 }
 
 function firstString(...values: unknown[]): string {
@@ -39,9 +67,7 @@ function yearFrom(value: unknown): number | null {
 }
 
 async function fromGoogleBooks(isbn: string): Promise<PartialLookup> {
-  const data = (await fetchJson(
-    `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`,
-  )) as {
+  const data = (await fetchJson(googleBooksUrl(isbn))) as {
     items?: Array<{
       volumeInfo?: {
         title?: string;

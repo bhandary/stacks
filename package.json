@@ -12,6 +12,7 @@
     "verify": "node scripts/verify/drive.mjs",
     "verify:cleanup": "bash scripts/verify/cleanup.sh",
     "formal:isbn": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/formal/isbn-verify.mts",
+    "check:lookup": "node --experimental-strip-types --disable-warning=ExperimentalWarning --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check/google-books-key.mts",
     "test:backup": "node scripts/test/backup-restore.mjs"
   },
   "dependencies": {

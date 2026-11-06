@@ -11,6 +11,11 @@ if [[ -f /tmp/stacks-verify.pid ]]; then
   rm -f /tmp/stacks-verify.pid
 fi
 
+if [[ -f /tmp/stacks-oidc-verify.pid ]]; then
+  kill "$(cat /tmp/stacks-oidc-verify.pid)" 2>/dev/null || true
+  rm -f /tmp/stacks-oidc-verify.pid
+fi
+
 pkill -f "next dev -H 0.0.0.0 -p ${PORT}" 2>/dev/null || true
 
 rm -f \

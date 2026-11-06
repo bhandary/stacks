@@ -1,4 +1,5 @@
 import { getPool, query } from "./db";
+import { isSecretAppStateKey } from "./secret-key";
 import type { Book, BookStatus } from "./types";
 
 /** Backup format. Reject anything else so a newer or older file cannot be applied by guessing. */
@@ -41,9 +42,6 @@ const TEXT_LIMITS: Record<string, number> = {
   description: 100_000,
 };
 
-const SECRET_KEY =
-  /(^|[_-])(password|passwd|secret|token|api[_-]?key|credential|database_url)([_-]|$)/i;
-
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -52,7 +50,7 @@ const INT4_MAX = 2147483647;
 const MAX_ERRORS = 50;
 
 const BACKUP_NOTE =
-  "Portable Stacks backup of books and app settings. Cover images are external URLs only; image bytes, server configuration, and secrets are not included.";
+  "Portable backup of one Stacks account. It includes that account's books and settings only. Accounts, sessions, tokens, other people's shelves, and ownerless legacy rows are not included. Cover images are external URLs; image bytes and server secrets are not included.";
 
 export type BackupData = {
   version: string;
@@ -184,19 +182,20 @@ function isInt4(value: unknown): value is number {
   );
 }
 
-export function isSecretAppStateKey(key: string): boolean {
-  return SECRET_KEY.test(key);
-}
+export { isSecretAppStateKey } from "./secret-key";
 
-export async function createBackup(): Promise<BackupData> {
+export async function createBackup(ownerId: string): Promise<BackupData> {
   const booksResult = await query<BookRow>(
     `SELECT id, title, author, category, status, rating, notes, isbn, year,
             publisher, page_count, cover_url, description, is_example, created_at, updated_at
      FROM books
+     WHERE owner_id = $1
      ORDER BY created_at ASC, id ASC`,
+    [ownerId],
   );
   const stateResult = await query<{ key: string; value: string }>(
-    "SELECT key, value FROM app_state ORDER BY key ASC",
+    "SELECT key, value FROM user_settings WHERE user_id = $1 ORDER BY key ASC",
+    [ownerId],
   );
 
   const appState: Record<string, string> = {};
@@ -456,10 +455,14 @@ export function publicValidation(result: ValidationResult): Omit<ValidationResul
   };
 }
 
-export async function getDestinationCounts(): Promise<DestinationCounts> {
-  const books = await query<{ n: number | string }>("SELECT COUNT(*)::int AS n FROM books");
+export async function getDestinationCounts(ownerId: string): Promise<DestinationCounts> {
+  const books = await query<{ n: number | string }>(
+    "SELECT COUNT(*)::int AS n FROM books WHERE owner_id = $1",
+    [ownerId],
+  );
   const state = await query<{ n: number | string }>(
-    "SELECT COUNT(*)::int AS n FROM app_state",
+    "SELECT COUNT(*)::int AS n FROM user_settings WHERE user_id = $1",
+    [ownerId],
   );
   return {
     bookCount: Number(books.rows[0]?.n ?? 0),
@@ -494,10 +497,22 @@ export async function readJsonLimited(request: Request): Promise<unknown> {
 }
 
 async function countsOn(
-  client: { query: (text: string) => Promise<{ rows: Array<{ n: number | string }> }> },
+  client: {
+    query: (
+      text: string,
+      params?: unknown[],
+    ) => Promise<{ rows: Array<{ n: number | string }> }>;
+  },
+  ownerId: string,
 ): Promise<DestinationCounts> {
-  const books = await client.query("SELECT COUNT(*)::int AS n FROM books");
-  const state = await client.query("SELECT COUNT(*)::int AS n FROM app_state");
+  const books = await client.query(
+    "SELECT COUNT(*)::int AS n FROM books WHERE owner_id = $1",
+    [ownerId],
+  );
+  const state = await client.query(
+    "SELECT COUNT(*)::int AS n FROM user_settings WHERE user_id = $1",
+    [ownerId],
+  );
   return {
     bookCount: Number(books.rows[0]?.n ?? 0),
     appStateCount: Number(state.rows[0]?.n ?? 0),
@@ -506,7 +521,7 @@ async function countsOn(
 
 export async function restoreBackup(
   input: unknown,
-  options: { replace: boolean },
+  options: { replace: boolean; ownerId: string },
 ): Promise<{ books: number; appState: number }> {
   const validation = validateBackupData(input);
   if (!validation.valid || !validation.backup) {
@@ -525,24 +540,29 @@ export async function restoreBackup(
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL statement_timeout = '30s'");
-    await client.query("LOCK TABLE books IN EXCLUSIVE MODE");
-    await client.query("LOCK TABLE app_state IN EXCLUSIVE MODE");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [options.ownerId]);
+    await client.query("SELECT id FROM books WHERE owner_id = $1 FOR UPDATE", [options.ownerId]);
 
-    const existing = await countsOn(client);
+    const existing = await countsOn(client, options.ownerId);
     if (destinationNeedsReplace(existing) && !options.replace) {
       throw new RestoreRefusedError(existing.bookCount, existing.appStateCount);
     }
 
-    await client.query("DELETE FROM books");
-    await client.query("DELETE FROM app_state");
+    const keptSecrets = await client.query(
+      "SELECT key, value FROM user_settings WHERE user_id = $1 ORDER BY key ASC",
+      [options.ownerId],
+    );
+    await client.query("DELETE FROM books WHERE owner_id = $1", [options.ownerId]);
+    await client.query("DELETE FROM user_settings WHERE user_id = $1", [options.ownerId]);
 
     for (const book of backup.books) {
       await client.query(
         `INSERT INTO books (
           id, title, author, category, status, rating, notes, isbn, year,
-          publisher, page_count, cover_url, description, is_example, created_at, updated_at
+          publisher, page_count, cover_url, description, is_example, created_at, updated_at,
+          owner_id
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
         )`,
         [
           book.id,
@@ -561,12 +581,26 @@ export async function restoreBackup(
           book.isExample,
           book.createdAt,
           book.updatedAt,
+          options.ownerId,
         ],
       );
     }
 
+    const secretRows = (
+      keptSecrets as { rows: Array<{ key: string; value: string }> }
+    ).rows.filter((row) => isSecretAppStateKey(row.key));
+    for (const row of secretRows) {
+      await client.query(
+        "INSERT INTO user_settings (user_id, key, value) VALUES ($1, $2, $3)",
+        [options.ownerId, row.key, row.value],
+      );
+    }
     for (const [key, value] of Object.entries(backup.appState)) {
-      await client.query("INSERT INTO app_state (key, value) VALUES ($1, $2)", [key, value]);
+      await client.query(
+        `INSERT INTO user_settings (user_id, key, value) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value`,
+        [options.ownerId, key, value],
+      );
     }
 
     await client.query("COMMIT");

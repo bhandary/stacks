@@ -12,10 +12,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { chromium } from "playwright";
+import { startOidcFixture } from "./oidc-fixture.mjs";
+import { oidcSignIn } from "./oidc-flow.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PORT = 43182;
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE = `http://localhost:${PORT}`;
 const ADMIN_URL = "postgres://stacks:stacks@127.0.0.1:5432/postgres";
 const SRC_DB = "stacks_bk_src_4b28";
 const DST_DB = "stacks_bk_dst_4b28";
@@ -24,6 +26,7 @@ const ARTIFACTS = path.join(ROOT, "artifacts", "backup-restore");
 const CURSOR_ARTIFACTS = "/opt/cursor/artifacts";
 const LOG_PATH = "/tmp/stacks-backup-next.log";
 const MAX_BACKUP_BYTES = 8 * 1024 * 1024;
+const AUTH_SECRET = "backup-test-auth-secret-not-for-production";
 
 const BOOK_FIELDS = [
   "id",
@@ -118,6 +121,9 @@ function emptyBackup() {
 
 let server = null;
 let serverLog = null;
+let fixture = null;
+let auth = { cookieHeader: "", sessionName: "authjs.session-token", sessionToken: "" };
+let ownerId = null;
 
 async function adminQuery(sql) {
   const client = new pg.Client({ connectionString: ADMIN_URL });
@@ -150,15 +156,16 @@ async function withDb(url, fn) {
   }
 }
 
-async function seedSource() {
-  await withDb(dbUrl(SRC_DB), async (client) => {
+async function seedShelf(databaseName) {
+  await withDb(dbUrl(databaseName), async (client) => {
     const books = [BOOK_A, BOOK_B];
     for (const book of books) {
       await client.query(
         `INSERT INTO books (
           id, title, author, category, status, rating, notes, isbn, year,
-          publisher, page_count, cover_url, description, is_example, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          publisher, page_count, cover_url, description, is_example, created_at, updated_at,
+          owner_id
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
         [
           book.id,
           book.title,
@@ -176,13 +183,55 @@ async function seedSource() {
           book.isExample,
           book.createdAt,
           book.updatedAt,
+          ownerId,
         ],
       );
     }
     await client.query(
-      "INSERT INTO app_state (key, value) VALUES ('examples_seeded', '1'), ('shelf_label', 'Window seat'), ('api_token', 'hunter2')",
+      `INSERT INTO user_settings (user_id, key, value)
+       VALUES ($1, 'examples_seeded', '1'), ($1, 'shelf_label', 'Window seat'), ($1, 'api_token', 'hunter2')`,
+      [ownerId],
+    );
+    await client.query(
+      `INSERT INTO books (id, title, author, created_at, updated_at)
+       VALUES ('99999999-9999-4999-8999-999999999999', 'Legacy Unassigned', '', '2017-01-02T03:04:05.006Z', '2017-01-02T03:04:05.006Z')
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await client.query(
+      "INSERT INTO app_state (key, value) VALUES ('legacy_label', 'leave-me') ON CONFLICT (key) DO NOTHING",
     );
   });
+}
+
+async function assertLegacyRemains() {
+  const row = await withDb(dbUrlFromServer(), (client) =>
+    client.query(
+      "SELECT title, owner_id FROM books WHERE id = '99999999-9999-4999-8999-999999999999'",
+    ),
+  );
+  assert.equal(row.rows[0]?.title, "Legacy Unassigned");
+  assert.equal(row.rows[0]?.owner_id, null);
+  const state = await withDb(dbUrlFromServer(), (client) =>
+    client.query("SELECT value FROM app_state WHERE key = 'legacy_label'"),
+  );
+  assert.equal(state.rows[0]?.value, "leave-me");
+}
+
+async function signInCurrent() {
+  auth = await oidcSignIn({ base: BASE, subject: "backup-owner" });
+  if (!auth.sessionToken) throw new Error(`backup sign-in failed: ${auth.hops?.join(" -> ")}`);
+  ownerId = await withDb(dbUrlFromServer(), async (client) => {
+    const result = await client.query(
+      `SELECT u.id FROM users u
+       JOIN accounts a ON a."userId" = u.id
+       WHERE a.provider = 'stacks-test-oidc' AND a."providerAccountId" = 'backup-owner'`,
+    );
+    return result.rows[0].id;
+  });
+}
+
+function dbUrlFromServer() {
+  return process.env.STACKS_BACKUP_DB;
 }
 
 async function stopServer() {
@@ -222,6 +271,7 @@ async function startServer(databaseUrl) {
   mkdirSync(path.dirname(LOG_PATH), { recursive: true });
   serverLog = createWriteStream(LOG_PATH, { flags: "a" });
   serverLog.write(`\n--- ${new Date().toISOString()} ${databaseUrl} ---\n`);
+  process.env.STACKS_BACKUP_DB = databaseUrl;
   server = spawn(NEXT_BIN, ["dev", "-H", "127.0.0.1", "-p", String(PORT)], {
     cwd: ROOT,
     env: {
@@ -229,6 +279,11 @@ async function startServer(databaseUrl) {
       DATABASE_URL: databaseUrl,
       PGSSL: "0",
       PORT: String(PORT),
+      AUTH_URL: BASE,
+      AUTH_SECRET,
+      STACKS_AUTH_TEST_OIDC: "1",
+      STACKS_AUTH_TEST_ISSUER: fixture.issuer,
+      NODE_ENV: "development",
     },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -260,7 +315,10 @@ async function startServer(databaseUrl) {
 }
 
 async function request(pathname, options = {}) {
-  const response = await fetch(`${BASE}${pathname}`, options);
+  const headers = new Headers(options.headers);
+  if (auth.cookieHeader) headers.set("cookie", auth.cookieHeader);
+  if ((options.method ?? "GET") !== "GET") headers.set("origin", BASE);
+  const response = await fetch(`${BASE}${pathname}`, { ...options, headers });
   const text = await response.text();
   let data = text;
   try {
@@ -304,10 +362,15 @@ async function main() {
   await recreateDatabase(SRC_DB);
   await recreateDatabase(DST_DB);
   log("databases", `created ${SRC_DB} and ${DST_DB}`);
+  fixture = await startOidcFixture(0);
+  log("fixture", `${fixture.issuer} local OIDC, not Google`);
 
   await startServer(dbUrl(SRC_DB));
   log("server", `source ${BASE}`);
-  await seedSource();
+  const denied = await request("/api/backup");
+  assert.equal(denied.status, 401);
+  await signInCurrent();
+  await seedShelf(SRC_DB);
 
   const exported = await getBackup();
   const sourceSnapshot = canonical(exported);
@@ -324,9 +387,12 @@ async function main() {
   log("export", "2 books, shelf_label kept, api_token omitted");
 
   const secretStillThere = await withDb(dbUrl(SRC_DB), (client) =>
-    client.query("SELECT value FROM app_state WHERE key = 'api_token'"),
+    client.query("SELECT value FROM user_settings WHERE user_id = $1 AND key = 'api_token'", [
+      ownerId,
+    ]),
   );
   assert.equal(secretStillThere.rows[0]?.value, "hunter2");
+  await assertLegacyRemains();
 
   const noConfirm = await restore(exported, { confirm: false, replace: true });
   assert.equal(noConfirm.status, 400);
@@ -338,6 +404,14 @@ async function main() {
   await stopServer();
   await startServer(dbUrl(DST_DB));
   log("server", `clean destination ${BASE}`);
+  await signInCurrent();
+  await withDb(dbUrl(DST_DB), async (client) => {
+    await client.query(
+      `INSERT INTO books (id, title, author, created_at, updated_at)
+       VALUES ('99999999-9999-4999-8999-999999999999', 'Legacy Unassigned', '', '2017-01-02T03:04:05.006Z', '2017-01-02T03:04:05.006Z')`,
+    );
+    await client.query("INSERT INTO app_state (key, value) VALUES ('legacy_label', 'leave-me')");
+  });
 
   const emptyResult = await restore(emptyBackup(), { confirm: true, replace: false });
   assert.equal(emptyResult.status, 200, JSON.stringify(emptyResult.data));
@@ -375,6 +449,7 @@ async function main() {
   assert.equal(restored.data.restored.appState, 2);
   const destinationSnapshot = canonical(await getBackup());
   assert.deepEqual(destinationSnapshot, sourceSnapshot);
+  await assertLegacyRemains();
   log("round-trip", "clean-database restore matched every book field and app_state key");
 
   const cases = [
@@ -504,6 +579,7 @@ async function main() {
   assert.equal(wiped.status, 200, JSON.stringify(wiped.data));
   assert.deepEqual(canonical(await getBackup()), { books: [], appState: {} });
   log("empty-replace", "explicit replace with an empty backup cleared the shelf");
+  await assertLegacyRemains();
 
   mkdirSync(ARTIFACTS, { recursive: true });
   const evidencePath = path.join(ARTIFACTS, "evidence.json");
@@ -528,6 +604,15 @@ async function runBrowser(exported) {
     hasTouch: true,
     acceptDownloads: true,
   });
+  await context.addCookies([
+    {
+      name: auth.sessionName,
+      value: auth.sessionToken,
+      url: BASE,
+      httpOnly: true,
+      sameSite: "Lax",
+    },
+  ]);
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);
   const dir = await mkdtemp(path.join(tmpdir(), "stacks-backup-"));
@@ -605,6 +690,7 @@ try {
   process.exitCode = 1;
 } finally {
   await stopServer();
+  if (fixture) await fixture.close().catch((error) => console.error("fixture", error.message));
   await dropDatabase(SRC_DB).catch((error) => console.error("drop source", error.message));
   await dropDatabase(DST_DB).catch((error) => console.error("drop dest", error.message));
 }

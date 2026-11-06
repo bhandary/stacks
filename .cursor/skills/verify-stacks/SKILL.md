@@ -51,14 +51,15 @@ npm run verify
 
 It then:
 
-1. Loads the shelf (example books)
-2. Adds a book via **manual ISBN lookup** of `9780451524935` (real Open Library / Google Books network)
-3. Edits that book to **Reading** and **4 stars**
-4. Searches `1984`
-5. Filters status **Reading**
-6. Reloads and checks the book is still there
-7. Deletes it
-8. Opens **Scan ISBN**, feeds the fake camera barcode, and saves the imported book
+1. Signs in when the login page is showing. Without Google credentials, `launch.sh` starts a local OIDC fixture and the drive uses test account A. That fixture is not Google. With Google credentials configured, sign in before driving.
+2. Loads the shelf (example books)
+3. Adds a book via **manual ISBN lookup** of `9780451524935` (real Open Library / Google Books network)
+4. Edits that book to **Reading** and **4 stars**
+5. Searches `1984`
+6. Filters status **Reading**
+7. Reloads and checks the book is still there
+8. Deletes it
+9. Opens **Scan ISBN**, feeds the fake camera barcode, and saves the imported book
 
 Drive uses system Chrome (`channel: "chrome"`) headed by default (`DISPLAY=:1` if unset). `HEADLESS=1` uses headless Chrome and can crash in this environment. Do not pass `--use-fake-ui-for-media-stream` together with `--auto-accept-camera-and-microphone-capture` — that pairing SIGTRAPs Chrome here. Another origin: `STACKS_URL=http://localhost:43177 npm run verify`.
 

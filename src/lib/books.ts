@@ -1,5 +1,5 @@
 import { EXAMPLE_BOOKS } from "./examples";
-import { query } from "./db";
+import { getPool, query } from "./db";
 import { normalizeIsbn } from "./isbn";
 import {
   BOOK_STATUSES,
@@ -25,6 +25,20 @@ type BookRow = {
   is_example: boolean;
   created_at: Date;
   updated_at: Date;
+};
+
+export type BookFilter = {
+  q?: string;
+  status?: string;
+  category?: string;
+};
+
+export type ShelfStats = {
+  total: number;
+  filtered: number;
+  authors: number;
+  categories: number;
+  byStatus: Record<BookStatus, number>;
 };
 
 function mapBook(row: BookRow): Book {
@@ -102,70 +116,135 @@ function digitsKeep(value: string): string {
   return value.replace(/[^0-9Xx]/g, "").toUpperCase();
 }
 
-export async function seedExamplesIfNeeded(): Promise<void> {
-  const seeded = await query<{ value: string }>(
-    "SELECT value FROM app_state WHERE key = 'examples_seeded'",
-  );
-  if (seeded.rowCount) return;
+const INSERT_SQL = `INSERT INTO books (
+  title, author, category, status, rating, notes, isbn, year,
+  publisher, page_count, cover_url, description, is_example, owner_id
+) VALUES (
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+) RETURNING *`;
 
-  const count = await query<{ n: string }>("SELECT COUNT(*)::text AS n FROM books");
-  if (Number(count.rows[0]?.n ?? 0) === 0) {
-    for (const book of EXAMPLE_BOOKS) {
-      await insertBook(book);
+function insertParams(book: BookInput, ownerId: string): unknown[] {
+  return [
+    book.title,
+    book.author,
+    book.category,
+    book.status,
+    book.rating,
+    book.notes,
+    book.isbn,
+    book.year,
+    book.publisher,
+    book.pageCount,
+    book.coverUrl,
+    book.description,
+    book.isExample ?? false,
+    ownerId,
+  ];
+}
+
+export async function seedExamplesIfNeeded(ownerId: string): Promise<void> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [ownerId]);
+    const seeded = await client.query(
+      "SELECT value FROM user_settings WHERE user_id = $1 AND key = 'examples_seeded'",
+      [ownerId],
+    );
+    if ((seeded.rowCount ?? 0) > 0) {
+      await client.query("COMMIT");
+      return;
     }
+    const count = await client.query<{ n: string }>(
+      "SELECT COUNT(*)::text AS n FROM books WHERE owner_id = $1",
+      [ownerId],
+    );
+    if (Number(count.rows[0]?.n ?? 0) === 0) {
+      for (const example of EXAMPLE_BOOKS) {
+        const book = normalizeBookInput(example);
+        await client.query(INSERT_SQL, insertParams(book, ownerId));
+      }
+    }
+    await client.query(
+      `INSERT INTO user_settings (user_id, key, value)
+       VALUES ($1, 'examples_seeded', '1')
+       ON CONFLICT (user_id, key) DO NOTHING`,
+      [ownerId],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // The original error is the one that matters.
+    }
+    throw error;
+  } finally {
+    client.release();
   }
-
-  await query(
-    "INSERT INTO app_state (key, value) VALUES ('examples_seeded', '1') ON CONFLICT (key) DO NOTHING",
-  );
 }
 
-export async function listBooks(): Promise<Book[]> {
-  await seedExamplesIfNeeded();
+export async function listBooks(
+  ownerId: string,
+  filter: BookFilter = {},
+): Promise<{ books: Book[]; stats: ShelfStats }> {
+  await seedExamplesIfNeeded(ownerId);
   const result = await query<BookRow>(
-    "SELECT * FROM books ORDER BY created_at DESC",
+    "SELECT * FROM books WHERE owner_id = $1 ORDER BY created_at DESC",
+    [ownerId],
   );
-  return result.rows.map(mapBook);
+  const all = result.rows.map(mapBook);
+  const status = BOOK_STATUSES.includes(filter.status as BookStatus)
+    ? (filter.status as BookStatus)
+    : undefined;
+  const category = filter.category?.trim() || "";
+  const needle = filter.q?.trim().toLowerCase() || "";
+  const books = all.filter((book) => {
+    if (status && book.status !== status) return false;
+    if (category && book.category !== category) return false;
+    if (!needle) return true;
+    return [book.title, book.author, book.isbn, book.category]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
+  const byStatus: Record<BookStatus, number> = { owned: 0, reading: 0, read: 0 };
+  for (const book of all) byStatus[book.status] += 1;
+  return {
+    books,
+    stats: {
+      total: all.length,
+      filtered: books.length,
+      authors: new Set(all.map((book) => book.author).filter(Boolean)).size,
+      categories: new Set(all.map((book) => book.category).filter(Boolean)).size,
+      byStatus,
+    },
+  };
 }
 
-export async function getBook(id: string): Promise<Book | null> {
-  const result = await query<BookRow>("SELECT * FROM books WHERE id = $1", [id]);
+export async function getBook(ownerId: string, id: string): Promise<Book | null> {
+  const result = await query<BookRow>(
+    "SELECT * FROM books WHERE id = $1 AND owner_id = $2",
+    [id, ownerId],
+  );
   return result.rows[0] ? mapBook(result.rows[0]) : null;
 }
 
-export async function insertBook(input: BookInput): Promise<Book> {
+export async function insertBook(ownerId: string, input: BookInput): Promise<Book> {
   const book = normalizeBookInput(input);
   if (!book.title) {
     throw new Error("Title is required");
   }
-  const result = await query<BookRow>(
-    `INSERT INTO books (
-      title, author, category, status, rating, notes, isbn, year,
-      publisher, page_count, cover_url, description, is_example
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-    ) RETURNING *`,
-    [
-      book.title,
-      book.author,
-      book.category,
-      book.status,
-      book.rating,
-      book.notes,
-      book.isbn,
-      book.year,
-      book.publisher,
-      book.pageCount,
-      book.coverUrl,
-      book.description,
-      book.isExample ?? false,
-    ],
-  );
+  const result = await query<BookRow>(INSERT_SQL, insertParams(book, ownerId));
   return mapBook(result.rows[0]);
 }
 
-export async function updateBook(id: string, input: BookInput): Promise<Book | null> {
-  const existing = await getBook(id);
+export async function updateBook(
+  ownerId: string,
+  id: string,
+  input: BookInput,
+): Promise<Book | null> {
+  const existing = await getBook(ownerId, id);
   if (!existing) return null;
   const book = normalizeBookInput({ ...existing, ...input });
   if (!book.title) {
@@ -173,24 +252,25 @@ export async function updateBook(id: string, input: BookInput): Promise<Book | n
   }
   const result = await query<BookRow>(
     `UPDATE books SET
-      title = $2,
-      author = $3,
-      category = $4,
-      status = $5,
-      rating = $6,
-      notes = $7,
-      isbn = $8,
-      year = $9,
-      publisher = $10,
-      page_count = $11,
-      cover_url = $12,
-      description = $13,
-      is_example = $14,
+      title = $3,
+      author = $4,
+      category = $5,
+      status = $6,
+      rating = $7,
+      notes = $8,
+      isbn = $9,
+      year = $10,
+      publisher = $11,
+      page_count = $12,
+      cover_url = $13,
+      description = $14,
+      is_example = $15,
       updated_at = NOW()
-    WHERE id = $1
+    WHERE id = $1 AND owner_id = $2
     RETURNING *`,
     [
       id,
+      ownerId,
       book.title,
       book.author,
       book.category,
@@ -209,12 +289,15 @@ export async function updateBook(id: string, input: BookInput): Promise<Book | n
   return result.rows[0] ? mapBook(result.rows[0]) : null;
 }
 
-export async function deleteBook(id: string): Promise<boolean> {
-  const result = await query("DELETE FROM books WHERE id = $1", [id]);
+export async function deleteBook(ownerId: string, id: string): Promise<boolean> {
+  const result = await query("DELETE FROM books WHERE id = $1 AND owner_id = $2", [id, ownerId]);
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function removeExampleBooks(): Promise<number> {
-  const result = await query("DELETE FROM books WHERE is_example = TRUE");
+export async function removeExampleBooks(ownerId: string): Promise<number> {
+  const result = await query(
+    "DELETE FROM books WHERE is_example = TRUE AND owner_id = $1",
+    [ownerId],
+  );
   return result.rowCount ?? 0;
 }

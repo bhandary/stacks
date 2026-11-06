@@ -91,6 +91,10 @@ export function BookForm({
     setError("");
     try {
       const response = await fetch(`/api/lookup?isbn=${encodeURIComponent(draft.isbn)}`);
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const payload = await response.json();
       if (!response.ok) {
         setLookupNote(payload.error || "Lookup failed.");
@@ -131,6 +135,10 @@ export function BookForm({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...draft, isExample: false }),
       });
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const payload = await response.json();
       if (!response.ok) {
         setError(payload.error || "Could not save that book.");
@@ -151,6 +159,10 @@ export function BookForm({
     setError("");
     try {
       const response = await fetch(`/api/books/${book.id}`, { method: "DELETE" });
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       if (!response.ok) {
         const payload = await response.json();
         setError(payload.error || "Could not delete that book.");

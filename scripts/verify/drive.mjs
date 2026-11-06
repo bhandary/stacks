@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { oidcSignIn } from "../test/oidc-flow.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const PORT = process.env.PORT || "43177";
@@ -40,8 +41,25 @@ async function waitForHealth(timeoutMs = 90_000) {
   throw new Error(`Stacks did not become healthy at ${BASE}/api/health`);
 }
 
-async function api(pathname, init) {
-  const response = await fetch(`${BASE}${pathname}`, init);
+let sessionCookie = "";
+
+async function ensureSession() {
+  const probe = await fetch(`${BASE}/api/books`, { redirect: "manual" });
+  if (probe.status !== 401) return;
+  const signed = await oidcSignIn({ base: BASE, subject: "alice" });
+  if (!signed.sessionToken) {
+    throw new Error(
+      "The shelf requires sign-in and the local test account did not complete. Use scripts/verify/launch.sh without Google credentials, or sign in with Google first.",
+    );
+  }
+  sessionCookie = signed.cookieHeader;
+}
+
+async function api(pathname, init = {}) {
+  const headers = new Headers(init.headers);
+  if (sessionCookie) headers.set("cookie", sessionCookie);
+  if ((init.method ?? "GET") !== "GET") headers.set("origin", new URL(BASE).origin);
+  const response = await fetch(`${BASE}${pathname}`, { ...init, headers });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(`${init?.method || "GET"} ${pathname} failed: ${payload.error || response.status}`);
@@ -96,6 +114,7 @@ async function main() {
   mkdirSync(ARTIFACTS, { recursive: true });
   const cameraFile = await ensureFixtures();
   await waitForHealth();
+  await ensureSession();
   await resetTestBooks();
   log("ready", `${BASE} healthy, fixtures at ${cameraFile}`);
 
@@ -131,6 +150,9 @@ async function main() {
 
   try {
     await page.goto(BASE, { waitUntil: "networkidle" });
+    if (await page.getByTestId("continue-test-alice").count()) {
+      await page.getByTestId("continue-test-alice").click();
+    }
     await page.getByTestId("book-card").first().waitFor();
     await shot(page, "01_home_examples.png");
     log("home", await page.getByTestId("counts").innerText());

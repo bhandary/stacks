@@ -22,7 +22,7 @@ npm install
 npm run dev
 ```
 
-The app listens on `http://localhost:43177`. Open that on a phone or a narrow desktop window. First visit seeds three example books; **Remove examples** deletes only those.
+The app listens on `http://localhost:43177`. Open that on a phone or a narrow desktop window. Sign in with Google (`AUTH.md`). The first visit to an empty shelf seeds three example books; **Remove examples** deletes only that account's examples.
 
 `npm start` after `npm run build` binds `0.0.0.0` and honors `PORT` (Railway sets this).
 
@@ -35,8 +35,8 @@ ISBN lookup uses Open Library and Google Books. Google Books is optional-key: if
 - Add, edit, or delete a book (title, author, category, status, rating, notes, ISBN)
 - Look up an ISBN and import title, authors, category, year, publisher, page count, cover, and description
 - Scan an ISBN with the camera (`BarcodeDetector`, with a ZXing fallback) or type it if the camera is unavailable
-- Persist everything in Postgres
-- Download a versioned backup of the shelf, or restore one after an explicit confirmation ([BACKUP.md](BACKUP.md))
+- Persist everything in Postgres, one private shelf per Google account
+- Download a versioned backup of your shelf, or restore one after an explicit confirmation ([BACKUP.md](BACKUP.md))
 
 ## Deploy on Railway
 
@@ -46,7 +46,8 @@ Do not need a second service for the app. Add a Postgres plugin and one web serv
 2. Add **Postgres**. Railway injects `DATABASE_URL`.
 3. The web service should use `npm run build` then `npm run start`. `railway.json` sets the start command and a `/api/health` check. A `Dockerfile` is here if you prefer image builds.
 4. Set `PORT` only if you are not using Railway’s default. Next.js already reads `PORT`.
-5. Deploy. The schema is created on first request; example books seed only when the table is empty.
+5. Set `AUTH_URL`, `AUTH_SECRET`, `AUTH_GOOGLE_ID`, and `AUTH_GOOGLE_SECRET` from [AUTH.md](AUTH.md). Without them the site shows the login page and does not open a shelf. Do not put those secrets in git.
+6. Deploy. The schema is created on first request. Example books seed only for a signed-in shelf that is empty. Books already in the database stay unassigned until the local procedure in AUTH.md is run against a copy.
 
 Hosted Postgres that requires TLS is detected from the URL (Railway, Neon, Supabase, `sslmode=require`). Force it with `PGSSL=1` if needed.
 

@@ -65,6 +65,10 @@ export function BackupRestore({ open, onOpenChange, onRestored }: BackupRestoreP
     setDownloading(true);
     try {
       const response = await fetch("/api/backup");
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(payload.error || "Could not download the backup");
@@ -114,6 +118,10 @@ export function BackupRestore({ open, onOpenChange, onRestored }: BackupRestoreP
         headers: { "Content-Type": "application/json" },
         body: text,
       });
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const result = (await response.json().catch(() => ({}))) as ValidationResponse & {
         error?: string;
       };
@@ -148,6 +156,10 @@ export function BackupRestore({ open, onOpenChange, onRestored }: BackupRestoreP
           backup: backupData,
         }),
       });
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const result = (await response.json().catch(() => ({}))) as {
         error?: string;
         details?: string[];

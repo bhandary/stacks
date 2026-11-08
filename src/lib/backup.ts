@@ -1,3 +1,4 @@
+import { canonicalIsbn } from "./books";
 import { getPool, query } from "./db";
 import { isSecretAppStateKey } from "./secret-key";
 import type { Book, BookStatus } from "./types";
@@ -323,6 +324,11 @@ export function validateBackupData(data: unknown): ValidationResult {
         pushError(errors, `${label} updatedAt must be a UTC timestamp with milliseconds.`);
       }
 
+      const isbn = canonicalIsbn(text.isbn ?? "");
+      if (isbn === null) {
+        pushError(errors, `${label} ISBN must be empty or a valid ISBN-10 or ISBN-13.`);
+      }
+
       if (errors.length > MAX_ERRORS) return;
 
       books.push({
@@ -333,7 +339,7 @@ export function validateBackupData(data: unknown): ValidationResult {
         status,
         rating: typeof entry.rating === "number" ? entry.rating : null,
         notes: text.notes ?? "",
-        isbn: text.isbn ?? "",
+        isbn: isbn ?? "",
         year: typeof entry.year === "number" ? entry.year : null,
         publisher: text.publisher ?? "",
         pageCount: typeof entry.pageCount === "number" ? entry.pageCount : null,

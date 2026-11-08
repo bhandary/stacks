@@ -93,8 +93,23 @@ function cleanStatus(value: unknown): BookStatus {
     : "owned";
 }
 
+export const INVALID_ISBN_MESSAGE =
+  "Enter a valid ISBN-10 or ISBN-13, or leave ISBN blank.";
+
+/** Empty stays empty. A non-empty value must pass `normalizeIsbn` and is returned as ISBN-13. */
+export function canonicalIsbn(value: unknown): string | null {
+  if (value == null || value === "") return "";
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return normalizeIsbn(trimmed);
+}
+
 export function normalizeBookInput(input: BookInput): BookInput {
-  const isbn = input.isbn ? normalizeIsbn(input.isbn) || digitsKeep(input.isbn) : "";
+  const isbn = canonicalIsbn(input.isbn);
+  if (isbn === null) {
+    throw new Error(INVALID_ISBN_MESSAGE);
+  }
   return {
     title: cleanText(input.title),
     author: cleanText(input.author),
@@ -110,10 +125,6 @@ export function normalizeBookInput(input: BookInput): BookInput {
     description: cleanText(input.description),
     isExample: Boolean(input.isExample),
   };
-}
-
-function digitsKeep(value: string): string {
-  return value.replace(/[^0-9Xx]/g, "").toUpperCase();
 }
 
 const INSERT_SQL = `INSERT INTO books (

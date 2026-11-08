@@ -448,9 +448,46 @@ async function main() {
   assert.equal(restored.data.restored.books, 2);
   assert.equal(restored.data.restored.appState, 2);
   const destinationSnapshot = canonical(await getBackup());
-  assert.deepEqual(destinationSnapshot, sourceSnapshot);
+  const expectedAfterNormalize = {
+    books: sourceSnapshot.books.map((book) =>
+      book.id === BOOK_A.id ? { ...book, isbn: "9780451524935" } : book,
+    ),
+    appState: sourceSnapshot.appState,
+  };
+  assert.deepEqual(destinationSnapshot, expectedAfterNormalize);
+  assert.equal(destinationSnapshot.books.find((book) => book.id === BOOK_B.id).isbn, "");
   await assertLegacyRemains();
   log("round-trip", "clean-database restore matched every book field and app_state key");
+  log("isbn-10", "0-451-52493-4 restored as ISBN-13 9780451524935; empty ISBN stayed empty");
+
+  const already13 = structuredClone(exported);
+  already13.books.find((book) => book.id === BOOK_A.id).isbn = "9780451524935";
+  const already13Result = await restore(already13, { confirm: true, replace: true });
+  assert.equal(already13Result.status, 200, JSON.stringify(already13Result.data));
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  const hyphen13 = structuredClone(exported);
+  hyphen13.books.find((book) => book.id === BOOK_A.id).isbn = "978-0-451-52493-5";
+  const hyphen13Result = await restore(hyphen13, { confirm: true, replace: true });
+  assert.equal(hyphen13Result.status, 200, JSON.stringify(hyphen13Result.data));
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("isbn-13", "a valid ISBN-13 and its hyphenated form stayed 9780451524935");
+
+  const badCheck = structuredClone(exported);
+  badCheck.books.find((book) => book.id === BOOK_A.id).isbn = "9780451524936";
+  const badCheckPreview = await request("/api/backup/validate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(badCheck),
+  });
+  assert.equal(badCheckPreview.status, 200, JSON.stringify(badCheckPreview.data));
+  assert.equal(badCheckPreview.data.valid, false);
+  assert.match(badCheckPreview.data.errors.join("\n"), /ISBN/);
+  assert.equal(badCheckPreview.data.preview, undefined);
+  const badCheckRestore = await restore(badCheck, { confirm: true, replace: true });
+  assert.equal(badCheckRestore.status, 400, JSON.stringify(badCheckRestore.data));
+  assert.match(JSON.stringify(badCheckRestore.data.details), /ISBN/);
+  assert.deepEqual(canonical(await getBackup()), destinationSnapshot);
+  log("isbn-rejected", "invalid check digit failed validation and restore left the shelf unchanged");
 
   const cases = [
     ["unsupported version", badVersion, 400],
@@ -638,6 +675,15 @@ async function runBrowser(exported) {
     await page.getByTestId("backup-file").setInputFiles(badVersion);
     await page.getByTestId("backup-invalid").waitFor();
     assert.match(await page.getByTestId("backup-invalid").innerText(), /Unsupported backup version/);
+    assert.equal(await page.getByTestId("backup-confirm").count(), 0);
+
+    const badIsbn = structuredClone(exported);
+    badIsbn.books.find((book) => book.id === BOOK_A.id).isbn = "9780451524936";
+    const badIsbnPath = path.join(dir, "bad-isbn.json");
+    await writeFile(badIsbnPath, JSON.stringify(badIsbn));
+    await page.getByTestId("backup-file").setInputFiles(badIsbnPath);
+    await page.getByTestId("backup-invalid").waitFor();
+    assert.match(await page.getByTestId("backup-invalid").innerText(), /ISBN/);
     assert.equal(await page.getByTestId("backup-confirm").count(), 0);
 
     const [download] = await Promise.all([

@@ -12,7 +12,7 @@ Version `1.0.0` includes:
 - That account's settings that are not secrets (`examples_seeded`, plus any other non-secret key)
 - A `metadata.bookCount` that must match the book list
 
-ISBN text is copied as stored. Restore does not run ISBN normalization, so a value that was saved as typed stays as typed.
+Export copies each ISBN as it is stored, including a value saved before check digits were enforced. Restore uses the same rule as saving a book. An empty ISBN stays empty. A non-empty ISBN must pass `normalizeIsbn`: a valid ISBN-10 or ISBN-13 is stored as the normalized ISBN-13, and any other value fails validation. The check is reported with the other preview errors, and restore refuses the file. Nothing is written, because a failed check never starts the replace.
 
 There are no foreign keys. A backup is one snapshot of both tables. Book ids must be unique. That is the referential check this schema has.
 
@@ -36,7 +36,7 @@ Opening a signed-in shelf calls the example-book seed for that account only. If 
 
 Nothing is written when you choose a file. The app shows the backup version, book count, setting count, and what is already on this shelf.
 
-- The file must be JSON, version `1.0.0`, at most 8 MB, and every field must have the type the database allows. Unknown fields are rejected so a newer file cannot be partially applied.
+- The file must be JSON, version `1.0.0`, at most 8 MB, and every field must have the type the database allows. A non-empty ISBN must be a valid ISBN-10 or ISBN-13 and is stored as ISBN-13. Unknown fields are rejected so a newer file cannot be partially applied.
 - A failed check or a database error leaves the shelf as it was. The replace runs in one transaction for the signed-in account: delete that account's books and settings, insert the file, then commit. A failure rolls that back. Other accounts and ownerless rows are not deleted. Secret settings already stored for the account are put back after the replace.
 - An empty book list is allowed. The preview warns that restoring it leaves no books. On a shelf that already has data, that still requires the replacement confirmation below.
 - If the shelf has any books or settings, restore is refused unless the request explicitly asks to replace them. The UI keeps the replace button disabled until that checkbox is checked. There is no merge and no duplicate insert.

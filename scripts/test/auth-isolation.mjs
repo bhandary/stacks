@@ -332,6 +332,26 @@ async function browserPass() {
         assert.match(who, /alice@example.test/);
         await page.getByRole("heading", { name: "Alpha Private" }).waitFor();
         assert.equal(await page.getByRole("heading", { name: "Beta Private" }).count(), 0);
+        assert.equal(await page.getByTestId("load-error").count(), 0);
+        const crookedCard = page.getByTestId("book-card").filter({ hasText: "Crooked Check" });
+        await crookedCard.waitFor();
+        assert.match(await crookedCard.innerText(), /978-045152493-6/);
+        await crookedCard.click();
+        await page.getByTestId("save-book").click();
+        await page.getByTestId("form-error").waitFor();
+        assert.match(await page.getByTestId("form-error").innerText(), /valid ISBN-10 or ISBN-13/);
+        await page.getByRole("button", { name: "Close" }).click();
+        await page.getByTestId("save-book").waitFor({ state: "hidden" });
+        await page.getByTestId("add-book").click();
+        await page.getByTestId("title-input").fill("Should Not Save");
+        await page.getByTestId("isbn-input").fill("9780451524936");
+        await page.getByTestId("save-book").click();
+        await page.getByTestId("form-error").waitFor();
+        assert.match(await page.getByTestId("form-error").innerText(), /valid ISBN-10 or ISBN-13/);
+        await page.getByRole("button", { name: "Close" }).click();
+        await page.getByTestId("save-book").waitFor({ state: "hidden" });
+        assert.equal(await page.getByRole("heading", { name: "Should Not Save" }).count(), 0);
+        assert.equal(await page.getByRole("heading", { name: "Crooked Check" }).count(), 1);
       } else {
         assert.match(who, /bob@example.test/);
         await page.getByRole("heading", { name: "Beta Private" }).waitFor();
@@ -819,6 +839,117 @@ async function main() {
   assert.equal(JSON.stringify(providers.data).includes("test-google-client-secret-not-real"), false);
   assert.equal(JSON.stringify(providers.data).includes(TEST_PLACEHOLDER()), false);
   log("providers", "google and the local fixture are separate; client secrets are not in the provider list");
+
+  const isbnSession = await oidcSignIn({ base: BASE, subject: "alice" });
+  const crookedId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  await withDb(dbUrl(DB_NAME), (client) =>
+    client.query(
+      `INSERT INTO books (id, title, author, isbn, owner_id, created_at, updated_at)
+       VALUES ($1, 'Crooked Check', 'Typo', '9780451524936', $2, '2016-01-02T03:04:05.006Z', '2016-01-02T03:04:05.006Z')`,
+      [crookedId, aliceId],
+    ),
+  );
+  const loadedCrooked = await request("/api/books", { cookie: isbnSession.cookieHeader });
+  assert.equal(loadedCrooked.status, 200, JSON.stringify(loadedCrooked.data));
+  const crookedRow = loadedCrooked.data.books.find((book) => book.id === crookedId);
+  assert.ok(crookedRow);
+  assert.equal(crookedRow.isbn, "9780451524936");
+  const oneCrooked = await request(`/api/books/${crookedId}`, { cookie: isbnSession.cookieHeader });
+  assert.equal(oneCrooked.status, 200);
+  assert.equal(oneCrooked.data.book.title, "Crooked Check");
+  assert.equal(oneCrooked.data.book.isbn, "9780451524936");
+
+  const badCreate = await request("/api/books", {
+    cookie: isbnSession.cookieHeader,
+    method: "POST",
+    body: { title: "Should Not Save", isbn: "9780451524936" },
+  });
+  assert.equal(badCreate.status, 400, JSON.stringify(badCreate.data));
+  assert.match(badCreate.data.error, /valid ISBN-10 or ISBN-13/);
+  const absent = await request("/api/books?q=Should%20Not%20Save", {
+    cookie: isbnSession.cookieHeader,
+  });
+  assert.equal(
+    absent.data.books.some((book) => book.title === "Should Not Save"),
+    false,
+  );
+
+  const fromTen = await request("/api/books", {
+    cookie: isbnSession.cookieHeader,
+    method: "POST",
+    body: { title: "From Ten", isbn: "0-451-52493-4" },
+  });
+  assert.equal(fromTen.status, 201, JSON.stringify(fromTen.data));
+  assert.equal(fromTen.data.book.isbn, "9780451524935");
+
+  const already = await request("/api/books", {
+    cookie: isbnSession.cookieHeader,
+    method: "POST",
+    body: { title: "Already Thirteen", isbn: "9780141439518" },
+  });
+  assert.equal(already.status, 201, JSON.stringify(already.data));
+  assert.equal(already.data.book.isbn, "9780141439518");
+
+  const blank = await request("/api/books", {
+    cookie: isbnSession.cookieHeader,
+    method: "POST",
+    body: { title: "No Isbn", isbn: "" },
+  });
+  assert.equal(blank.status, 201, JSON.stringify(blank.data));
+  assert.equal(blank.data.book.isbn, "");
+
+  const badEdit = await request(`/api/books/${already.data.book.id}`, {
+    cookie: isbnSession.cookieHeader,
+    method: "PATCH",
+    body: { isbn: "9780141439519" },
+  });
+  assert.equal(badEdit.status, 400, JSON.stringify(badEdit.data));
+  assert.match(badEdit.data.error, /valid ISBN-10 or ISBN-13/);
+  const stillThirteen = await request(`/api/books/${already.data.book.id}`, {
+    cookie: isbnSession.cookieHeader,
+  });
+  assert.equal(stillThirteen.data.book.isbn, "9780141439518");
+  assert.equal(stillThirteen.data.book.title, "Already Thirteen");
+
+  const editedTen = await request(`/api/books/${fromTen.data.book.id}`, {
+    cookie: isbnSession.cookieHeader,
+    method: "PATCH",
+    body: { isbn: "0141439513" },
+  });
+  assert.equal(editedTen.status, 200, JSON.stringify(editedTen.data));
+  assert.equal(editedTen.data.book.isbn, "9780141439518");
+
+  const editedSame = await request(`/api/books/${already.data.book.id}`, {
+    cookie: isbnSession.cookieHeader,
+    method: "PATCH",
+    body: { title: "Already Thirteen", isbn: "978-0-141-43951-8" },
+  });
+  assert.equal(editedSame.status, 200, JSON.stringify(editedSame.data));
+  assert.equal(editedSame.data.book.isbn, "9780141439518");
+
+  const cleared = await request(`/api/books/${fromTen.data.book.id}`, {
+    cookie: isbnSession.cookieHeader,
+    method: "PATCH",
+    body: { isbn: "   " },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.data));
+  assert.equal(cleared.data.book.isbn, "");
+
+  const blockedRename = await request(`/api/books/${crookedId}`, {
+    cookie: isbnSession.cookieHeader,
+    method: "PATCH",
+    body: { title: "Crooked Renamed" },
+  });
+  assert.equal(blockedRename.status, 400, JSON.stringify(blockedRename.data));
+  const stillCrooked = await request(`/api/books/${crookedId}`, {
+    cookie: isbnSession.cookieHeader,
+  });
+  assert.equal(stillCrooked.data.book.title, "Crooked Check");
+  assert.equal(stillCrooked.data.book.isbn, "9780451524936");
+  log(
+    "isbn",
+    "invalid check digits rejected on create and edit; ISBN-10 stored as ISBN-13; valid ISBN-13 unchanged; a stored invalid ISBN still loads",
+  );
 
   await browserPass();
 

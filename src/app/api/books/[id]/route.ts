@@ -1,4 +1,4 @@
-import { deleteBook, getBook, updateBook } from "@/lib/books";
+import { INVALID_ISBN_MESSAGE, deleteBook, getBook, updateBook } from "@/lib/books";
 import { AuthError, assertSameOrigin, privateJson } from "@/lib/http";
 import { requireUser } from "@/lib/session";
 import type { BookInput } from "@/lib/types";
@@ -38,7 +38,8 @@ export async function PATCH(
   } catch (error) {
     if (error instanceof AuthError) return privateJson({ error: error.message }, error.status);
     const message = error instanceof Error ? error.message : "Failed to update book";
-    const status = message === "Title is required" ? 400 : 500;
+    const status =
+      message === "Title is required" || message === INVALID_ISBN_MESSAGE ? 400 : 500;
     return privateJson({ error: message }, status);
   }
 }

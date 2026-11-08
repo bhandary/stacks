@@ -19,7 +19,26 @@ import type { Book, BookInput, BookLookup } from "@/lib/types";
 
 type SortKey = "newest" | "oldest" | "title" | "author" | "rating";
 
-export function Library() {
+async function signOutOfStacks() {
+  const csrf = await fetch("/api/auth/csrf");
+  const payload = (await csrf.json().catch(() => ({}))) as { csrfToken?: string };
+  if (!payload.csrfToken) {
+    window.location.assign("/login");
+    return;
+  }
+  await fetch("/api/auth/signout", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ csrfToken: payload.csrfToken, callbackUrl: "/login" }),
+  });
+  window.location.assign("/login");
+}
+
+export function Library({
+  account,
+}: {
+  account: { name: string | null; email: string | null };
+}) {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -38,6 +57,10 @@ export function Library() {
     setError("");
     try {
       const response = await fetch("/api/books");
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Failed to load books");
       setBooks(payload.books as Book[]);
@@ -104,6 +127,10 @@ export function Library() {
     setEditing(null);
     try {
       const response = await fetch(`/api/lookup?isbn=${encodeURIComponent(isbn)}`);
+      if (response.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
       const payload = await response.json();
       if (response.ok) {
         const found = payload.book as BookLookup;
@@ -130,6 +157,10 @@ export function Library() {
 
   async function removeExamples() {
     const response = await fetch("/api/books/examples", { method: "DELETE" });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
     if (response.ok) await load();
   }
 
@@ -142,6 +173,9 @@ export function Library() {
             {books.length} {books.length === 1 ? "book" : "books"} · {authors}{" "}
             {authors === 1 ? "author" : "authors"} · {categories.length}{" "}
             {categories.length === 1 ? "category" : "categories"}
+          </p>
+          <p className="mt-1 text-xs text-stone-400" data-testid="signed-in-as">
+            {account.email || account.name || "Signed in"}
           </p>
         </div>
         <DropdownMenu>
@@ -165,6 +199,9 @@ export function Library() {
               onClick={() => void removeExamples()}
             >
               Remove examples
+            </DropdownMenuItem>
+            <DropdownMenuItem data-testid="sign-out" onClick={() => void signOutOfStacks()}>
+              Sign out
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

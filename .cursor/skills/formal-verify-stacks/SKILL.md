@@ -11,7 +11,7 @@ Use this when a change can break how a typed, scanned, or imported ISBN becomes 
 
 The code's strongest promise that everyday tests miss is: **a string is an ISBN only if its check digit is right, and a valid ISBN-10 becomes the 978-prefixed ISBN-13 of the same edition.**
 
-`lookupIsbn` (`src/lib/lookup.ts`) returns null unless `normalizeIsbn` accepts the input. `GET /api/lookup` (`src/app/api/lookup/route.ts`) rejects unless `looksLikeIsbn` and `normalizeIsbn` both pass. Camera and manual scan (`src/components/scan-isbn.tsx` `accept`, form submit) only keep a `normalizeIsbn` hit. `normalizeBookInput` (`src/lib/books.ts`) stores that canonical ISBN-13 when the input is valid.
+`lookupIsbn` (`src/lib/lookup.ts`) returns null unless `normalizeIsbn` accepts the input. The catalog merge (`pick`) still prefers the first nonempty Google Books field over Open Library and does not replace that normalized ISBN with a catalog identifier. `GET /api/lookup` (`src/app/api/lookup/route.ts`) requires a signed-in user, then rejects unless `looksLikeIsbn` and `normalizeIsbn` both pass. Camera and manual scan (`src/components/scan-isbn.tsx` `accept`, form submit) only keep a `normalizeIsbn` hit. Per-user create and edit (`POST /api/books`, `PATCH /api/books/[id]`) call `insertBook` / `updateBook`, which call `normalizeBookInput` (`src/lib/books.ts`). That stores the canonical ISBN-13 when the input is valid. Example seeding calls `normalizeBookInput` directly. Backup restore does not: `validateBackupData` keeps `text.isbn` and `restoreBackup` inserts `book.isbn` (`src/lib/backup.ts`). `BACKUP.md` states that ISBN text is copied as stored.
 
 The Playwright drive in `.cursor/skills/verify-stacks` uses two published numbers (`9780451524935`, `9780141439518`). It never tries a wrong check digit, an ISBN-10/`X` check, a 979-prefix ISBN-13, or a hyphenated ISBN-10. A one-character check-digit bug would still import those two books.
 
@@ -24,10 +24,12 @@ The check **runs** `src/lib/isbn.ts` only. Rerun it if the diff includes any of:
 | Path | Functions / sites | Why |
 | --- | --- | --- |
 | `src/lib/isbn.ts` | `digitsOnly`, `isIsbn10`, `isIsbn13`, `isbn13CheckDigit`, `isbn10To13`, `normalizeIsbn`, `looksLikeIsbn`, `formatIsbn` | Implementation under test |
-| `src/lib/lookup.ts` | `lookupIsbn` | Calls `normalizeIsbn`; invalid ISBN never hits the network |
-| `src/app/api/lookup/route.ts` | `GET` | `looksLikeIsbn` then `normalizeIsbn` |
+| `src/lib/lookup.ts` | `lookupIsbn`, `pick` | `normalizeIsbn` first; invalid ISBN never hits the network. `pick` does not change the ISBN |
+| `src/app/api/lookup/route.ts` | `GET` | `requireUser`, then `looksLikeIsbn` and `normalizeIsbn` |
 | `src/components/scan-isbn.tsx` | `accept`, manual submit | Scan keeps only `normalizeIsbn` |
-| `src/lib/books.ts` | `normalizeBookInput` | Valid ISBN is stored as `normalizeIsbn` output |
+| `src/lib/books.ts` | `normalizeBookInput`, `insertBook`, `updateBook`, `seedExamplesIfNeeded` | Valid ISBN is stored as `normalizeIsbn` output. Create, edit, and example seed all call `normalizeBookInput` |
+| `src/app/api/books/route.ts` | `POST` | Per-user create. Calls `insertBook` |
+| `src/app/api/books/[id]/route.ts` | `PATCH` | Per-user edit. Calls `updateBook` |
 
 If none of those paths change, this skill does not apply. UI copy, cover art, and Postgres wiring do not affect these properties.
 
@@ -55,9 +57,26 @@ Pass prints `PASS formal-verify-isbn`, each property id with how many times it w
 
 Cheap: about a million ISBN-10 check-character trials and three million ISBN-13 trials. Should finish in a few seconds on a laptop.
 
+## Code steps the properties call
+
+The harness calls the real functions. It does not re-code their branches. Inside `normalizeIsbn`, one function call is one atomic step.
+
+| Step | Code in `src/lib/isbn.ts` | What that step does |
+| --- | --- | --- |
+| 1 | `digitsOnly` | Strip every character that is not a digit or `X`/`x`, then upper-case |
+| 2 | `isIsbn13` | Require 13 digits, then accept only when `isbn13CheckDigit` of the first 12 equals the last character |
+| 3 | `isIsbn10` | Require 9 digits plus a check character. The expected check is `(11 - (sum % 11)) % 11` on weights 10..2, with 10 written as `X` |
+| 4 | `isbn13CheckDigit` | Weights 1,3 on the first 12 digits; the digit is `(10 - (sum % 10)) % 10` |
+| 5 | `isbn10To13` | `978` plus the first 9 characters plus `isbn13CheckDigit` of that 12. This step does not re-check the ISBN-10 digit |
+| 6 | `normalizeIsbn` | Step 1, then step 2, then step 3 via step 5, otherwise `null` |
+| 7 | `looksLikeIsbn` | Step 1, then length 10 or 13. No check digit |
+| 8 | `formatIsbn` | Step 1, then hyphenate a stripped length of 13 or 10. Any other length returns the original string |
+
+`isbn10Spec` / `isbn13Spec` in the harness are the weighted-sum ≡ 0 rule. They are not a copy of steps 2–5.
+
 ## Properties (readable without the tool)
 
-Each id is a function name in `scripts/formal/isbn-verify.mts` (`PROPERTIES`).
+Each id is a function name in `scripts/formal/isbn-verify.mts` (`PROPERTIES`). No property sentence changed in the maintenance pass at `36e963d`: the function bodies are the same bytes as `18605f59`.
 
 | Id | Property | Harm if false |
 | --- | --- | --- |
@@ -92,7 +111,7 @@ Not exhaustive over all 10⁹ ISBN-10 bodies or all 10¹² ISBN-13 bodies.
 - `normalizeBookInput`'s fallback `normalizeIsbn(input.isbn) || digitsKeep(input.isbn)` — **invalid ISBNs are still stored as stripped characters**. The harness does not import `books.ts` (extensionless `./db` import and a `pg` pool). If you tighten that fallback, add a new property and import the real function through a runner that can resolve it
 - Camera decoding (`BarcodeDetector`, ZXing) and whether a frame is an EAN-13
 - `yearFrom` / cover URL rewriting in `lookup.ts`
-- Backup export/restore (`src/lib/backup.ts` and `/api/backup`). A backup copies stored ISBN strings as text and does not call `normalizeIsbn`. It is outside this check.
+- Backup export/restore (`src/lib/backup.ts` and `/api/backup`), including the per-account restore added with sign-in. `validateBackupData` assigns `isbn: text.isbn` and `restoreBackup` inserts `book.isbn`. The file does not import `normalizeIsbn`. `BACKUP.md` says this on purpose: "ISBN text is copied as stored. Restore does not run ISBN normalization, so a value that was saved as typed stays as typed." A later edit of that book does go through `normalizeBookInput`. The harness does not claim restore re-checks the digit.
 
 ## Real bug vs modeling error
 
@@ -118,7 +137,7 @@ If you need to know the harness can fail, break **one** line in `src/lib/isbn.ts
 | `normalizeIsbn`: `if (isIsbn10(raw)) return raw` (skip `isbn10To13`) | `P-normalize-accept` | `normalizeIsbn("0141439513")` was `0141439513`, not `9780141439518` |
 | `isbn13CheckDigit`: always return `"0"` | `P-isbn13-check-digit-fn` | `isbn13CheckDigit("978014143951")` was `0`, unique valid digit is `8` |
 
-Last vacuity check (do not commit the scratch): `isIsbn13` check-digit compare removed; `npm run formal:isbn` failed `P-isbn13-check` on `isIsbn13("9780141439519")` (expected false, got true). Product file restored; command passed with no findings.
+Last vacuity check (do not commit the scratch): on `36e963d`, the `isIsbn13` check-digit compare was removed and the function returned true after the 13-digit regex. `npm run formal:isbn` failed `P-isbn13-check` on `isIsbn13("9780141439519")` (GS1 sum fails, expected false, got true). `src/lib/isbn.ts` was restored. The restored command passed with no findings.
 
 ## Intended product change
 
@@ -146,13 +165,26 @@ If the command fails and the change was **not** intended, it is a regression. Le
 | `P-looks-like-length` | `src/lib/isbn.ts` | `looksLikeIsbn`, `digitsOnly` |
 | `P-format-preserves-digits` | `src/lib/isbn.ts` | `formatIsbn`, `digitsOnly` |
 
-Call sites that **depend** on the promise but are not executed by the harness: `lookupIsbn` in `src/lib/lookup.ts`, `GET` in `src/app/api/lookup/route.ts`, `accept` and manual submit in `src/components/scan-isbn.tsx`, `normalizeBookInput` in `src/lib/books.ts`.
+Call sites that **depend** on the promise but are not executed by the harness: `lookupIsbn` in `src/lib/lookup.ts`, `GET` in `src/app/api/lookup/route.ts` (after `requireUser`), `accept` and manual submit in `src/components/scan-isbn.tsx`, `normalizeBookInput` in `src/lib/books.ts` (from `insertBook`, `updateBook`, and `seedExamplesIfNeeded`). `restoreBackup` writes the isbn string and does not call these functions.
 
 ## Code sync
 
-Last confirmed at commit `5f04ff61ab0b3a135ba2527c154484fa8ddd996a` (`src/lib/isbn.ts` still matches `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418`; this commit is the harness and skill).
+Last confirmed at commit `36e963d6f3ec9c5c2dcf434a51ab55e2c6d4e67e`. `src/lib/isbn.ts` is byte-identical to `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418`. `scripts/formal/isbn-verify.mts` is byte-identical to the harness at `5f04ff61ab0b3a135ba2527c154484fa8ddd996a`. The marker `5f04ff61` had not been moved after later caller commits. The property sentences were re-read against the functions at `36e963d` and still match. No property wording changed. Bounds were not reduced.
 
-**Move this SHA forward only after** `npm run formal:isbn` passes and you have read `src/lib/isbn.ts` plus the harness properties and confirmed they still describe that commit's functions. Do not bump the SHA because a doc-only or unrelated commit landed.
+Commits read from `5f04ff61` through `36e963d`, and the class of each change that touches ISBN state:
+
+| Commit | What changed | Class |
+| --- | --- | --- |
+| `6a3a3d9` | Recorded the previous sync SHA | No effect on the functions |
+| `06672ad` | Excluded `scripts/formal` from the Next typecheck | No effect on the properties |
+| `f557b3c` | Optional Google Books API key and lookup failure logs | No effect. `lookupIsbn` still returns null when `normalizeIsbn` returns null. `pick` is still first-nonempty. The ISBN sent to the catalogs is the normalized one |
+| `6442f2f` | Versioned backup and restore | No effect on these properties. Restore copies the isbn string. The skill noted that in the same commit |
+| `2c8c78c` | Google sign-in and one shelf per account | No effect. `normalizeBookInput` is unchanged. Create, edit, and example seed still call it. `GET /api/lookup` checks the session, then the same ISBN predicates. Restore inserts `book.isbn` for that account only |
+| `23f9592` | verify-stacks sign-in drive | No effect. `src/lib/isbn.ts` and `src/components/scan-isbn.tsx` are not in the diff |
+
+`npm run formal:isbn` passed on `36e963d` before this skill text was edited. That pass used the property text above, and that text still describes `src/lib/isbn.ts`. It was not a pass of a description that had drifted off the functions. What was stale was the sync marker, not the checksum claims.
+
+**Move this SHA forward only after** `npm run formal:isbn` passes and you have read `src/lib/isbn.ts` plus the harness properties and confirmed they still describe that commit's functions. Do not bump the SHA because a doc-only or unrelated commit landed. A skill-only edit after `36e963d` does not move it.
 
 To confirm you are still in sync:
 

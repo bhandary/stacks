@@ -11,7 +11,7 @@ Use this when a change can break how a typed, scanned, or imported ISBN becomes 
 
 The code's strongest promise that everyday tests miss is: **a string is an ISBN only if its check digit is right, and a valid ISBN-10 becomes the 978-prefixed ISBN-13 of the same edition.**
 
-`lookupIsbn` (`src/lib/lookup.ts`) returns null unless `normalizeIsbn` accepts the input. The catalog merge (`pick`) still prefers the first nonempty Google Books field over Open Library and does not replace that normalized ISBN with a catalog identifier. `GET /api/lookup` (`src/app/api/lookup/route.ts`) requires a signed-in user, then rejects unless `looksLikeIsbn` and `normalizeIsbn` both pass. Camera and manual scan (`src/components/scan-isbn.tsx` `accept`, form submit) only keep a `normalizeIsbn` hit. Per-user create and edit (`POST /api/books`, `PATCH /api/books/[id]`) call `insertBook` / `updateBook`, which call `normalizeBookInput` (`src/lib/books.ts`). That stores the canonical ISBN-13 when the input is valid. Example seeding calls `normalizeBookInput` directly. Backup restore does not: `validateBackupData` keeps `text.isbn` and `restoreBackup` inserts `book.isbn` (`src/lib/backup.ts`). `BACKUP.md` states that ISBN text is copied as stored.
+`lookupIsbn` (`src/lib/lookup.ts`) returns null unless `normalizeIsbn` accepts the input. The catalog merge (`pick`) still prefers the first nonempty Google Books field over Open Library and does not replace that normalized ISBN with a catalog identifier. `GET /api/lookup` (`src/app/api/lookup/route.ts`) requires a signed-in user, then rejects unless `looksLikeIsbn` and `normalizeIsbn` both pass. Camera and manual scan (`src/components/scan-isbn.tsx` `accept`, form submit) only keep a `normalizeIsbn` hit. Per-user create and edit (`POST /api/books`, `PATCH /api/books/[id]`) call `insertBook` / `updateBook`, which call `normalizeBookInput` (`src/lib/books.ts`). Example seeding calls `normalizeBookInput` directly. `canonicalIsbn` leaves an empty ISBN empty. A non-empty ISBN must pass `normalizeIsbn` and is stored as that ISBN-13; anything else is rejected. Backup export still copies the stored string. `validateBackupData` runs `canonicalIsbn` before `restoreBackup` inserts `book.isbn` (`src/lib/backup.ts`): a valid ISBN-10 or ISBN-13 is stored as ISBN-13, and an invalid ISBN fails validation so the replace is refused. `BACKUP.md` says that.
 
 The Playwright drive in `.cursor/skills/verify-stacks` uses two published numbers (`9780451524935`, `9780141439518`). It never tries a wrong check digit, an ISBN-10/`X` check, a 979-prefix ISBN-13, or a hyphenated ISBN-10. A one-character check-digit bug would still import those two books.
 
@@ -27,9 +27,10 @@ The check **runs** `src/lib/isbn.ts` only. Rerun it if the diff includes any of:
 | `src/lib/lookup.ts` | `lookupIsbn`, `pick` | `normalizeIsbn` first; invalid ISBN never hits the network. `pick` does not change the ISBN |
 | `src/app/api/lookup/route.ts` | `GET` | `requireUser`, then `looksLikeIsbn` and `normalizeIsbn` |
 | `src/components/scan-isbn.tsx` | `accept`, manual submit | Scan keeps only `normalizeIsbn` |
-| `src/lib/books.ts` | `normalizeBookInput`, `insertBook`, `updateBook`, `seedExamplesIfNeeded` | Valid ISBN is stored as `normalizeIsbn` output. Create, edit, and example seed all call `normalizeBookInput` |
+| `src/lib/books.ts` | `normalizeBookInput`, `canonicalIsbn`, `insertBook`, `updateBook`, `seedExamplesIfNeeded` | Non-empty ISBN must be `normalizeIsbn` output; an invalid ISBN is rejected. Create, edit, and example seed all call `normalizeBookInput` |
 | `src/app/api/books/route.ts` | `POST` | Per-user create. Calls `insertBook` |
 | `src/app/api/books/[id]/route.ts` | `PATCH` | Per-user edit. Calls `updateBook` |
+| `src/lib/backup.ts` | `validateBackupData`, `restoreBackup` | Restore stores `canonicalIsbn` output. An invalid ISBN fails validation and the replace is refused |
 
 If none of those paths change, this skill does not apply. UI copy, cover art, and Postgres wiring do not affect these properties.
 
@@ -108,10 +109,10 @@ Not exhaustive over all 10⁹ ISBN-10 bodies or all 10¹² ISBN-13 bodies.
 - `fromGoogleBooks` / `fromOpenLibrary` / `pick` merge in `src/lib/lookup.ts` (network JSON, not checksums)
 - Status (`owned|reading|read`) and rating `1..5` in `src/lib/books.ts` `cleanStatus` / `cleanRating` and the `books` CHECK constraints in `src/lib/db.ts`
 - Duplicate rows: `insertBook` does not dedupe; `SCHEMA_SQL` has no unique `isbn`
-- `normalizeBookInput`'s fallback `normalizeIsbn(input.isbn) || digitsKeep(input.isbn)` — **invalid ISBNs are still stored as stripped characters**. The harness does not import `books.ts` (extensionless `./db` import and a `pg` pool). If you tighten that fallback, add a new property and import the real function through a runner that can resolve it
+- `canonicalIsbn` / `normalizeBookInput` in `src/lib/books.ts`. A non-empty ISBN that `normalizeIsbn` rejects is a 400, not a stored digit string. The harness does not import `books.ts` (extensionless `./db` import and a `pg` pool). Create, edit, and backup restore cover that rule in `scripts/test/auth-isolation.mjs` and `scripts/test/backup-restore.mjs`
 - Camera decoding (`BarcodeDetector`, ZXing) and whether a frame is an EAN-13
 - `yearFrom` / cover URL rewriting in `lookup.ts`
-- Backup export/restore (`src/lib/backup.ts` and `/api/backup`), including the per-account restore added with sign-in. `validateBackupData` assigns `isbn: text.isbn` and `restoreBackup` inserts `book.isbn`. The file does not import `normalizeIsbn`. `BACKUP.md` says this on purpose: "ISBN text is copied as stored. Restore does not run ISBN normalization, so a value that was saved as typed stays as typed." A later edit of that book does go through `normalizeBookInput`. The harness does not claim restore re-checks the digit.
+- Backup export (`createBackup` in `src/lib/backup.ts`), including the per-account export added with sign-in, still copies stored ISBN strings as text. Restore calls `canonicalIsbn` inside `validateBackupData`: empty stays empty, a valid ISBN-10 or ISBN-13 is stored as ISBN-13, and an invalid ISBN fails validation so `restoreBackup` refuses the replace. The harness does not import `backup.ts`. `scripts/test/backup-restore.mjs` covers that gate. A later edit of a restored book also goes through `normalizeBookInput`.
 
 ## Real bug vs modeling error
 
@@ -165,7 +166,7 @@ If the command fails and the change was **not** intended, it is a regression. Le
 | `P-looks-like-length` | `src/lib/isbn.ts` | `looksLikeIsbn`, `digitsOnly` |
 | `P-format-preserves-digits` | `src/lib/isbn.ts` | `formatIsbn`, `digitsOnly` |
 
-Call sites that **depend** on the promise but are not executed by the harness: `lookupIsbn` in `src/lib/lookup.ts`, `GET` in `src/app/api/lookup/route.ts` (after `requireUser`), `accept` and manual submit in `src/components/scan-isbn.tsx`, `normalizeBookInput` in `src/lib/books.ts` (from `insertBook`, `updateBook`, and `seedExamplesIfNeeded`). `restoreBackup` writes the isbn string and does not call these functions.
+Call sites that **depend** on the promise but are not executed by the harness: `lookupIsbn` in `src/lib/lookup.ts`, `GET` in `src/app/api/lookup/route.ts` (after `requireUser`), `accept` and manual submit in `src/components/scan-isbn.tsx`, `canonicalIsbn` and `normalizeBookInput` in `src/lib/books.ts` (from `insertBook`, `updateBook`, `seedExamplesIfNeeded`, and `validateBackupData` in `src/lib/backup.ts`). `restoreBackup` inserts the ISBN `canonicalIsbn` already accepted.
 
 ## Code sync
 

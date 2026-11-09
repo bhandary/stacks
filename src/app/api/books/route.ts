@@ -1,5 +1,5 @@
 import { AuthError, assertSameOrigin, privateJson } from "@/lib/http";
-import { insertBook, listBooks } from "@/lib/books";
+import { INVALID_ISBN_MESSAGE, insertBook, listBooks } from "@/lib/books";
 import { requireUser } from "@/lib/session";
 import { BOOK_STATUSES, type BookInput, type BookStatus } from "@/lib/types";
 
@@ -42,7 +42,8 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof AuthError) return privateJson({ error: error.message }, error.status);
     const message = error instanceof Error ? error.message : "Failed to add book";
-    const status = message === "Title is required" ? 400 : 500;
+    const status =
+      message === "Title is required" || message === INVALID_ISBN_MESSAGE ? 400 : 500;
     return privateJson({ error: message }, status);
   }
 }

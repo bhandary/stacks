@@ -305,28 +305,30 @@ export function BookForm({
               rows={3}
             />
           </div>
-          {error ? (
-            <p className="text-sm text-destructive" data-testid="form-error">
-              {error}
-            </p>
-          ) : null}
-          <div className="sticky bottom-0 flex items-center justify-between gap-2 border-t bg-popover pt-3">
-            {book ? (
-              <Button
-                type="button"
-                variant="destructive"
-                data-testid="delete-book"
-                onClick={remove}
-                disabled={busy}
-              >
-                Delete
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t bg-popover pt-3">
+            {error ? (
+              <p className="text-sm text-destructive" data-testid="form-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="flex items-center justify-between gap-2">
+              {book ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  data-testid="delete-book"
+                  onClick={remove}
+                  disabled={busy}
+                >
+                  Delete
+                </Button>
+              ) : (
+                <span />
+              )}
+              <Button type="submit" data-testid="save-book" disabled={busy}>
+                {busy ? "Saving…" : book ? "Save changes" : "Add to shelf"}
               </Button>
-            ) : (
-              <span />
-            )}
-            <Button type="submit" data-testid="save-book" disabled={busy}>
-              {busy ? "Saving…" : book ? "Save changes" : "Add to shelf"}
-            </Button>
+            </div>
           </div>
         </form>
       </DialogContent>

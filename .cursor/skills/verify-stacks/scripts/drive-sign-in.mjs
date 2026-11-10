@@ -120,7 +120,20 @@ try {
   });
   const alice = await aliceContext.newPage();
   alice.setDefaultTimeout(60_000);
+  await alice.goto(`${base}/login?error=AccessDenied`, { waitUntil: "domcontentloaded" });
+  await alice.getByTestId("login-error").waitFor();
+  const loginError = await alice.getByTestId("login-error").innerText();
+  assert(
+    loginError.includes("Sign-in did not finish. No shelf was opened."),
+    `login-error was ${loginError}`,
+  );
+  assert((await alice.getByTestId("continue-test-alice").count()) === 1, "test account missing beside login error");
+  assert((await alice.getByTestId("auth-unconfigured").count()) === 1, "auth-unconfigured missing beside login error");
+  await shot(alice, "00_login_error.png");
+  log("login-error", loginError.trim());
+
   await alice.goto(base, { waitUntil: "domcontentloaded" });
+  assert((await alice.getByTestId("login-error").count()) === 0, "login-error rendered without an error query");
   await alice.getByTestId("test-oidc-note").waitFor();
   await alice.getByTestId("continue-test-alice").waitFor();
   await alice.getByTestId("auth-unconfigured").waitFor();

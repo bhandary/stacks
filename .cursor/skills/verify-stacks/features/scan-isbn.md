@@ -7,7 +7,7 @@ Scan opens the camera, reads an ISBN barcode, and drops the catalog result into 
 - `scan-camera` decodes the fixture barcode `9780141439518` from the fake camera and opens a filled add form.
 - `scan-save` saves that imported book on the signed-in shelf.
 - `scan-manual` types a second ISBN into `manual-isbn` and reaches a filled form from **Use**.
-- `scan-manual-invalid` shows an error for a number that is not an ISBN and does not open the form.
+- `scan-manual-invalid` shows an error when the typed value is not 10 or 13 digits, and does not open the form.
 
 ## How to get to it (user POV)
 
@@ -38,3 +38,4 @@ Preconditions:
 - `npm run verify` runs this camera path and then saves the book. It also deletes a pre-existing `9780141439518` row first. A scratch database from this skill will not have that row until this journey saves it.
 - Lookup can 429 on Google Books. `scan-camera` still needs a title in the form. If the form opens with an empty title and the ISBN filled, lookup failed. That is a failure of the import, not a camera pass.
 - `BarcodeDetector` is tried before ZXing. The status `Point the camera at an ISBN barcode` means the detector is running and has not read the fixture yet.
+- A 10- or 13-digit string with a bad check digit does not set `scan-error` and does not open the form. The length check passes, `normalizeIsbn` returns nothing, and the submit ends with no message. The fixture camera can still report `Found 9780141439518` while that field is filled. The `123` recipe is the one that must show the error.

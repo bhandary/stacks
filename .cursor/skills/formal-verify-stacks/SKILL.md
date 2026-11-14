@@ -13,7 +13,7 @@ The code's strongest promise that everyday tests miss is: **a string is an ISBN 
 
 `lookupIsbn` (`src/lib/lookup.ts`) returns null unless `normalizeIsbn` accepts the input. The catalog merge (`pick`) still prefers the first nonempty Google Books field over Open Library and does not replace that normalized ISBN with a catalog identifier. `GET /api/lookup` (`src/app/api/lookup/route.ts`) requires a signed-in user, then rejects unless `looksLikeIsbn` and `normalizeIsbn` both pass. Camera and manual scan (`src/components/scan-isbn.tsx` `accept`, form submit) only keep a `normalizeIsbn` hit. Per-user create and edit (`POST /api/books`, `PATCH /api/books/[id]`) call `insertBook` / `updateBook`, which call `normalizeBookInput` (`src/lib/books.ts`). Example seeding calls `normalizeBookInput` directly. `canonicalIsbn` leaves an empty ISBN empty. A non-empty ISBN must pass `normalizeIsbn` and is stored as that ISBN-13; anything else is rejected. Backup export still copies the stored string. `validateBackupData` runs `canonicalIsbn` before `restoreBackup` inserts `book.isbn` (`src/lib/backup.ts`): a valid ISBN-10 or ISBN-13 is stored as ISBN-13, and an invalid ISBN fails validation so the replace is refused. `BACKUP.md` says that.
 
-The Playwright drive in `.cursor/skills/verify-stacks` uses two published numbers (`9780451524935`, `9780141439518`). It never tries a wrong check digit, an ISBN-10/`X` check, a 979-prefix ISBN-13, or a hyphenated ISBN-10. A one-character check-digit bug would still import those two books.
+The Playwright drive in `.cursor/skills/verify-stacks` uses two published numbers (`9780451524935`, `9780141439518`). The scan manual script also rejects `9780451524934` and `0451524935`, and accepts ISBN-10 `0451524934` as `9780451524935`. It still does not try an ISBN-10 check character of `X`, a 979-prefix ISBN-13, or a hyphenated ISBN-10. A one-character check-digit bug in `src/lib/isbn.ts` would still import those two published books.
 
 Catalog merge (Google Books preferred over Open Library in `lookupIsbn`) is a first-nonempty pick, not a checksum. Status/rating bounds are a small enum plus `1..5`. The `books` table has **no unique ISBN**, so the code does not promise dedupe; TLA+ on add/import order would be checking a property the product does not claim. Those are weaker or unclaimed.
 
@@ -88,7 +88,7 @@ Each id is a function name in `scripts/formal/isbn-verify.mts` (`PROPERTIES`). N
 | `P-normalize-accept` | `normalizeIsbn(input)` returns that canonical ISBN-13 when `digitsOnly(input)` is a valid ISBN-10 or ISBN-13 (ISBN-10 goes through `isbn10To13`). | Lookup, scan, and save key the same edition differently. |
 | `P-normalize-reject` | `normalizeIsbn(input)` is `null` when the stripped value is not a check-valid ISBN-10 or ISBN-13. | Lookup queries garbage, or scan accepts a wrong barcode. |
 | `P-equivalent-forms` | For every valid ISBN-10, `normalizeIsbn(isbn10) === normalizeIsbn(isbn10To13(isbn10))`, and hyphen/space/`x` vs `X` variants match. | `0-451-52493-4` and `978-0-451-52493-5` miss each other. |
-| `P-looks-like-length` | `looksLikeIsbn(input)` is true iff `digitsOnly(input)` has length 10 or 13. It does **not** check the check digit. | Callers that treat `looksLikeIsbn` as validity mislabel a bad check digit. The scan manual path still calls `normalizeIsbn` afterward. |
+| `P-looks-like-length` | `looksLikeIsbn(input)` is true iff `digitsOnly(input)` has length 10 or 13. It does **not** check the check digit. | Callers that treat `looksLikeIsbn` as validity mislabel a bad check digit. The scan manual path uses `normalizeIsbn` and shows an error when that returns null. |
 | `P-format-preserves-digits` | `digitsOnly(formatIsbn(s))` equals `digitsOnly(s)` when the stripped length is 10 or 13; otherwise `formatIsbn` returns `s`. | The shelf card (`src/components/book-card.tsx`) would show digits that do not match storage. |
 
 ## Bounds (honest)
@@ -125,7 +125,7 @@ A **modeling error** is any of:
 - You removed a guard in `src/lib/isbn.ts` (see mutations below) and the command still passes
 - The failure input is not something `digitsOnly` / `normalizeIsbn` would see
 
-`looksLikeIsbn` accepting a bad check digit is **specified behavior** (`P-looks-like-length`), not a checksum bug. The scan manual form can still no-op when `looksLikeIsbn` is true and `normalizeIsbn` is null — that UI gap is out of scope for this file.
+`looksLikeIsbn` accepting a bad check digit is **specified behavior** (`P-looks-like-length`), not a checksum bug. The scan manual form calls `normalizeIsbn` and, when that returns null, shows `Enter a valid ISBN-10 or ISBN-13.` without opening the add form. That UI message is out of scope for this file.
 
 ## Mutations that must fail
 
@@ -170,7 +170,7 @@ Call sites that **depend** on the promise but are not executed by the harness: `
 
 ## Code sync
 
-Last confirmed at commit `36e963d6f3ec9c5c2dcf434a51ab55e2c6d4e67e`. `src/lib/isbn.ts` is byte-identical to `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418`. `scripts/formal/isbn-verify.mts` is byte-identical to the harness at `5f04ff61ab0b3a135ba2527c154484fa8ddd996a`. The marker `5f04ff61` had not been moved after later caller commits. The property sentences were re-read against the functions at `36e963d` and still match. No property wording changed. Bounds were not reduced.
+Last confirmed at commit `36e963d6f3ec9c5c2dcf434a51ab55e2c6d4e67e`. `src/lib/isbn.ts` is byte-identical to `18605f59caa2bc58f6cc2cc5d8b0f13f6e2ea418`. `scripts/formal/isbn-verify.mts` matches the harness at `5f04ff61ab0b3a135ba2527c154484fa8ddd996a` except the `P-looks-like-length` harm example, which no longer says the scan manual path treats `looksLikeIsbn` as validity. The property sentence is unchanged. The marker `5f04ff61` had not been moved after later caller commits. The property sentences were re-read against the functions at `36e963d` and still match. No property wording changed. Bounds were not reduced.
 
 Commits read from `5f04ff61` through `36e963d`, and the class of each change that touches ISBN state:
 

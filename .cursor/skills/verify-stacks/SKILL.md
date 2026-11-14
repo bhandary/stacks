@@ -88,6 +88,12 @@ The sign-in and isolation journey is:
 node .cursor/skills/verify-stacks/scripts/drive-sign-in.mjs
 ```
 
+The typed scan path, including a bad check digit, is:
+
+```bash
+node .cursor/skills/verify-stacks/scripts/drive-scan-isbn.mjs
+```
+
 Other features use the same browser settings and the same sign-in. Their steps are in `features/`. `npm run verify` (`scripts/verify/drive.mjs`) is a separate full-shelf script: it signs in only as account A, looks up a live ISBN, edits, searches, deletes, and scans. It does not create a scratch database, does not prove account B, and deletes rows for `9780451524935` and `9780141439518`. Do not treat it as a substitute for one feature file.
 
 `npm run test:auth` and `npm run test:backup` are HTTP and browser checks against their own disposable databases. They are not this UI map. `npm run formal:isbn` checks ISBN check digits. `npm run check:lookup` stubs `fetch` and does not prove a live catalog merge.
@@ -130,5 +136,6 @@ Run cleanup after a failed launch or drive before the next attempt, so ports and
 | `scripts/cleanup.sh` | `bash .cursor/skills/verify-stacks/scripts/cleanup.sh` |
 | `scripts/ready-sign-in.mjs` | Called by `launch.sh`. Runs the alice probe and sign-out. `AUTH_URL` must already be the launched origin. |
 | `scripts/drive-sign-in.mjs` | `node .cursor/skills/verify-stacks/scripts/drive-sign-in.mjs` |
+| `scripts/drive-scan-isbn.mjs` | `node .cursor/skills/verify-stacks/scripts/drive-scan-isbn.mjs` |
 
 All three shell scripts are executable. `STACKS_VERIFY_STATE` overrides the current-run symlink for doctor, cleanup, drive, and the ready probe's sibling scripts.

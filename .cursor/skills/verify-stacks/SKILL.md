@@ -43,7 +43,7 @@ sudo apt-get install -y postgresql postgresql-client
 
 Teardown is `cleanup.sh` in the Cleanup section. Do not use `scripts/verify/launch.sh` for this skill: if `/api/health` already answers it exits 0 and leaves you on someone else's process, and it does not create a scratch database.
 
-Parallel runs: set a distinct `PORT`, `STACKS_OIDC_FIXTURE_PORT`, and `STACKS_VERIFY_RUN_ID` for each. Launch prints a state path. Pass that path as `STACKS_VERIFY_STATE` to doctor, drive, and cleanup. The `current-run.env` symlink only tracks the latest launch.
+One `next dev` per checkout. Next.js 16 exits a second dev server in this directory with `Another next dev server is already running`, even when `PORT` differs. Stop the recorded server with `cleanup.sh` before launching again. Launch prints a state path. Pass that path as `STACKS_VERIFY_STATE` to doctor, drive, and cleanup when `artifacts/verify/current-run.env` points at a different attempt. If launch fails after it has started the fixture or the dev server, it stops that attempt and drops that scratch database.
 
 ## Doctor
 

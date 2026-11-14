@@ -1,6 +1,6 @@
 # Backup export and restore
 
-Backup downloads the signed-in account's books and non-secret settings as one JSON file. Restore replaces that account's shelf only after the file is previewed and, when the shelf is not empty, after the replacement checkbox is checked.
+Backup downloads the signed-in account's books and non-secret settings as one JSON file. Restore replaces that account's shelf only after the file is previewed and, when the shelf is not empty, after the replacement checkbox is checked. A valid ISBN in the file is stored as digits-only ISBN-13. An invalid ISBN fails the preview and writes nothing.
 
 ## Sub-features
 
@@ -37,6 +37,6 @@ Preconditions:
 - Choosing a file does not write. A preview screenshot without the success line is not a restore.
 - Removing the example books does not make the shelf empty for restore. `examples_seeded` remains in `user_settings`, so the checkbox is still required. The confirm button stays disabled until it is checked.
 - The download is per account. A's file must not be judged by the whole `books` table, which also holds B and any ownerless legacy rows.
-- Restore does not run ISBN normalization. Assert the ISBN string stored in the file, not a rewritten one.
+- Restore uses the same ISBN rule as saving a book. An empty ISBN stays empty. A valid ISBN-10 or ISBN-13 is stored as digits-only ISBN-13. The file this journey downloads is already ISBN-13, so those values match after replace. An ISBN-10 in that file does not: putting `054792822X` on The Hobbit and confirming replace stores `9780547928227`. An invalid ISBN fails the preview with `ISBN must be empty or a valid ISBN-10 or ISBN-13`, `backup-confirm` is not shown, and the shelf is not written.
 - Cover bytes are not in the file. A restored card can show a generated spine when the cover URL fails to load. Assert the title.
 - `npm run test:backup` covers invalid files and a mid-restore database error. This journey does not. Do not mark those cases passed because the happy path worked.

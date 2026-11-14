@@ -1,6 +1,6 @@
 # Add and edit a book
 
-Add and edit lets a signed-in person save a book by hand or from an ISBN lookup, change its status and rating, see it after a reload, and delete it.
+Add and edit lets a signed-in person save a book by hand or from an ISBN lookup, change its status and rating, see it after a reload, and delete it. A blank ISBN stays blank. A valid ISBN-10 or ISBN-13 is stored as ISBN-13. Any other ISBN is rejected and the dialog stays open.
 
 ## Sub-features
 
@@ -9,6 +9,8 @@ Add and edit lets a signed-in person save a book by hand or from an ISBN lookup,
 - `edit-status-rating` sets Reading and 4 stars on the saved book.
 - `edit-reload` shows the same status and rating after a full reload.
 - `edit-delete` removes the book from the shelf and from `books`.
+- `add-isbn-invalid` rejects a value that is not a valid ISBN and writes no row.
+- `add-isbn-10` stores a valid ISBN-10 as ISBN-13.
 
 ## How to get to it (user POV)
 
@@ -29,12 +31,15 @@ Preconditions:
 - **Edit.** Click that card. In the dialog named `Edit book`, `status-select` selects `reading` and `rating-star-4` (`aria-label="4 stars"`) is clicked. Click `save-book` (accessible name `Save changes`). The card's `status-badge` reads `Reading` and `rating-stars` has `aria-label="4 stars"`.
 - **Reload.** `page.reload`. The same card still shows `Reading` and `4 stars`. SQL for that ISBN shows `status` `reading` and `rating` `4` on alice's `owner_id` only.
 - **Delete.** Open the card, click `delete-book`, and wait until the card is detached. `/api/books` and `SELECT title FROM books WHERE isbn = '9780451524935'` no longer return it.
-- **Proof.** Save the lookup dialog screenshot, the edited card screenshot, the post-reload screenshot, the `/api/books` JSON after edit and after delete, and the SQL rows. Put them in `artifacts/verify/<run-id>/add-edit-book/`.
+- **Invalid ISBN.** Click `add-book`. Fill `title-input` with `Bad Isbn` and `isbn-input` with `12345`. Click `save-book`. `data-testid="form-error"` reads `Enter a valid ISBN-10 or ISBN-13, or leave ISBN blank.` The dialog named `Add a book` stays open. SQL has no title `Bad Isbn`. Close it with Escape or the Close button. There is no Cancel button on this dialog.
+- **ISBN-10.** Click `add-book`. Fill `title-input` with `Isbn Ten Copy`, `author-input` with `Check Digit`, and `isbn-input` with `0306406152`. Click `save-book`. The heading `Isbn Ten Copy` is visible. `/api/books` and SQL show ISBN `9780306406157` on alice's `owner_id`. Delete that card so the shelf does not keep the probe.
+- **Proof.** Save the lookup dialog screenshot, the edited card screenshot, the post-reload screenshot, the invalid-ISBN error, the ISBN-10 card, the `/api/books` JSON after edit and after delete, and the SQL rows. Put them in `artifacts/verify/<run-id>/add-edit-book/`.
 
 ## Gotchas
 
 - `save-book` stays disabled while the request is in flight. Wait for the dialog to close, not for the button label alone.
 - A title is required. An ISBN-only form does not save until lookup or typing fills the title.
+- Save posts the form as typed. The server keeps a blank ISBN blank, rewrites a valid ISBN-10 or ISBN-13 to ISBN-13, and returns 400 with `Enter a valid ISBN-10 or ISBN-13, or leave ISBN blank.` for anything else. The form shows that string in `form-error` and does not close.
 - Lookup that returns HTTP 404 sets `lookup-note` to the error and leaves the title blank. That is a failed lookup, not a successful add.
 - Keyless Google Books often returns HTTP 429. Open Library can still fill the title. The note then says `Imported from Open Library.` The add still passes if the title and ISBN are right. The merge of both sources is the catalog-search feature, not this one.
 - `npm run verify` also looks up `9780451524935` and then deletes it. Running it against this scratch database in the middle of this journey removes the book you are asserting.

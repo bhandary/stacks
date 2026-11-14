@@ -36,7 +36,7 @@ Each feature file starts with an H1 and one paragraph, then these H2 sections in
 ## Features
 
 - [Sign in and per-user shelves](./sign-in.md) covers fixture sign-in, a private book, account B's separate shelf, and sign-out.
-- [Add and edit a book](./add-edit-book.md) covers manual save, ISBN lookup, status and rating, reload, and delete.
-- [Catalog lookup and shelf search](./catalog-search.md) covers merged catalog fields plus search, status, category, and sort.
-- [Backup export and restore](./backup-restore.md) covers download, preview, confirmed replace, and the other account staying put.
+- [Add and edit a book](./add-edit-book.md) covers manual save, ISBN lookup, status and rating, reload, delete, and storing a valid ISBN as ISBN-13.
+- [Catalog lookup and shelf search](./catalog-search.md) covers merged catalog fields plus search (title, author, ISBN, and category), status, category, and sort.
+- [Backup export and restore](./backup-restore.md) covers download, preview, confirmed replace, ISBN-13 normalization on restore, and the other account staying put.
 - [Scan an ISBN](./scan-isbn.md) covers the camera barcode and the typed ISBN on the scan screen.

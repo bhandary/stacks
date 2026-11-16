@@ -43,7 +43,7 @@ sudo apt-get install -y postgresql postgresql-client
 
 Teardown is `cleanup.sh` in the Cleanup section. Do not use `scripts/verify/launch.sh` for this skill: if `/api/health` already answers it exits 0 and leaves you on someone else's process, and it does not create a scratch database.
 
-Parallel runs: set a distinct `PORT`, `STACKS_OIDC_FIXTURE_PORT`, and `STACKS_VERIFY_RUN_ID` for each. Launch prints a state path. Pass that path as `STACKS_VERIFY_STATE` to doctor, drive, and cleanup. The `current-run.env` symlink only tracks the latest launch.
+Next.js runs one `next dev` per repo directory. A second launch while that server is still up exits. The script then drops only the attempt it just created (fixture, scratch database, and state file) and leaves the server that was already running. Stop that server with `cleanup.sh` before launching another. `PORT`, `STACKS_OIDC_FIXTURE_PORT`, and `STACKS_VERIFY_RUN_ID` still name the run. Pass the printed state path as `STACKS_VERIFY_STATE` to doctor, drive, and cleanup. The `current-run.env` symlink only tracks the latest launch.
 
 ## Doctor
 
@@ -125,7 +125,7 @@ It does not delete `artifacts/verify/<run-id>/` or `/opt/cursor/artifacts/verify
 
 Do not run `npm run verify:cleanup`. That script `pkill`s `next dev` by command line and can stop a server this skill does not own.
 
-Run cleanup after a failed launch or drive before the next attempt, so ports and scratch databases do not linger.
+A launch that fails after it has created the scratch database cleans that attempt up itself. A failed drive does not. Run cleanup after a failed drive before the next attempt, so ports and scratch databases do not linger.
 
 ## Helpers
 

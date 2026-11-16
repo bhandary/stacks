@@ -114,14 +114,36 @@ APP_PID=""
 FIXTURE_PID=""
 APP_PGID=""
 FIXTURE_PGID=""
+# `exit` does not run the ERR trap, so every post-start failure goes through abort.
+# Never signal this script's own process group: a child that failed to leave it
+# would take the cleanup down with it.
+stop_started() {
+  local pgid="$1"
+  local pid="$2"
+  local self="${SELF_PGID:-}"
+  if [[ -z "$self" ]]; then
+    self="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ' || true)"
+  fi
+  if [[ -n "$pgid" && "$pgid" != "$self" ]]; then
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+  elif [[ -n "$pid" ]]; then
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+}
+abort() {
+  trap - ERR
+  echo "fail  $*" >&2
+  echo "Launch failed. Cleaning up this attempt." >&2
+  stop_started "${APP_PGID:-}" "${APP_PID:-}"
+  stop_started "${FIXTURE_PGID:-}" "${FIXTURE_PID:-}"
+  if [[ -f "$STATE_DIR/run.env" ]]; then
+    STACKS_VERIFY_STATE="$STATE_DIR/run.env" bash "$SKILL_ROOT/scripts/cleanup.sh" || true
+  fi
+  exit 1
+}
 on_err() {
   local status=$?
-  trap - ERR
-  echo "Launch failed (exit ${status}). Cleaning up this attempt." >&2
-  if [[ -n "${APP_PGID}" ]]; then kill -TERM -- "-${APP_PGID}" 2>/dev/null || true; fi
-  if [[ -n "${FIXTURE_PGID}" ]]; then kill -TERM -- "-${FIXTURE_PGID}" 2>/dev/null || true; fi
-  STACKS_VERIFY_STATE="$STATE_DIR/run.env" bash "$SKILL_ROOT/scripts/cleanup.sh" || true
-  exit "$status"
+  abort "command failed (exit ${status})"
 }
 trap on_err ERR
 
@@ -159,8 +181,7 @@ disown "$FIXTURE_PID" "$APP_PID" 2>/dev/null || true
 
 SELF_PGID="$(ps -o pgid= -p "$$" | tr -d ' ')"
 if [[ -z "$APP_PGID" || "$APP_PGID" == "$SELF_PGID" || -z "$FIXTURE_PGID" || "$FIXTURE_PGID" == "$SELF_PGID" ]]; then
-  echo "fail  server or fixture stayed in the launch script process group" >&2
-  exit 1
+  abort "server or fixture stayed in the launch script process group"
 fi
 
 python3 - "$STATE_DIR/run.env" "$FIXTURE_PID" "$FIXTURE_PGID" "$APP_PID" "$APP_PGID" <<'PY'
@@ -192,21 +213,21 @@ for _ in $(seq 1 60); do
     break
   fi
   if ! kill -0 "$FIXTURE_PID" 2>/dev/null; then
-    echo "fail  oidc fixture exited. See $EVIDENCE_DIR/logs/oidc.log" >&2
-    exit 1
+    abort "oidc fixture exited. See $EVIDENCE_DIR/logs/oidc.log"
   fi
   sleep 0.25
 done
 if [[ "$ready" != "1" ]]; then
-  echo "fail  oidc fixture did not publish discovery at $ISSUER" >&2
-  exit 1
+  abort "oidc fixture did not publish discovery at $ISSUER"
 fi
 
 health=0
 for _ in $(seq 1 180); do
   if ! kill -0 "$APP_PID" 2>/dev/null; then
-    echo "fail  next dev exited. See $EVIDENCE_DIR/logs/next.log" >&2
-    exit 1
+    if grep -q "Another next dev server is already running" "$EVIDENCE_DIR/logs/next.log" 2>/dev/null; then
+      abort "next dev exited because another next dev is already running in this repo. Stop that one with cleanup.sh before launching again. See $EVIDENCE_DIR/logs/next.log"
+    fi
+    abort "next dev exited. See $EVIDENCE_DIR/logs/next.log"
   fi
   body="$(curl -sf "http://127.0.0.1:${PORT}/api/health" 2>/dev/null || true)"
   if [[ "$body" == *'"ok":true'* && "$body" == *'"db":true'* ]]; then
@@ -216,16 +237,14 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 if [[ "$health" != "1" ]]; then
-  echo "fail  GET /api/health did not return ok and db. See $EVIDENCE_DIR/logs/next.log" >&2
-  exit 1
+  abort "GET /api/health did not return ok and db. See $EVIDENCE_DIR/logs/next.log"
 fi
 
 tables="$(psql "$DATABASE_URL" -Atc "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND relname IN ('users','accounts','sessions','books','user_settings') ORDER BY 1")"
 expected=$'accounts\nbooks\nsessions\nuser_settings\nusers'
 if [[ "$tables" != "$expected" ]]; then
-  echo "fail  schema tables after /api/health:" >&2
   echo "$tables" >&2
-  exit 1
+  abort "schema tables after /api/health were not users, accounts, sessions, books, and user_settings"
 fi
 
 AUTH_URL="$AUTH_URL" node "$SKILL_ROOT/scripts/ready-sign-in.mjs"

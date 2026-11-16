@@ -102,7 +102,7 @@ const PROPERTIES: Property[] = [
     id: "P-looks-like-length",
     property:
       "looksLikeIsbn(input) is true exactly when digitsOnly(input) has length 10 or 13. It does not check the check digit.",
-    harm: "Callers that treat looksLikeIsbn as validity (the scan manual path does, then still calls normalizeIsbn) would mislabel a bad check digit as a valid ISBN.",
+    harm: "Callers that treat looksLikeIsbn as validity would mislabel a bad check digit as a valid ISBN. The scan manual path uses normalizeIsbn and shows an error when that returns null.",
   },
   {
     id: "P-format-preserves-digits",

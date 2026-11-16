@@ -7,7 +7,7 @@ Scan opens the camera, reads an ISBN barcode, and drops the catalog result into 
 - `scan-camera` decodes the fixture barcode `9780141439518` from the fake camera and opens a filled add form.
 - `scan-save` saves that imported book on the signed-in shelf.
 - `scan-manual` types a second ISBN into `manual-isbn` and reaches a filled form from **Use**.
-- `scan-manual-invalid` shows an error for a number that is not an ISBN and does not open the form.
+- `scan-manual-invalid` shows an error for a number that is not an ISBN, including a 10- or 13-digit value with a bad check digit, and does not open the form.
 
 ## How to get to it (user POV)
 
@@ -18,6 +18,14 @@ Scan opens the camera, reads an ISBN barcode, and drops the catalog result into 
 
 ## Driving it with Playwright
 
+Typed check digits, with the camera left unavailable:
+
+```bash
+node .cursor/skills/verify-stacks/scripts/drive-scan-isbn.mjs
+```
+
+That script covers `123`, `9780451524934`, `0451524935`, `9780451524935`, and `0451524934`. It does not run `scan-camera` or `scan-save`.
+
 Preconditions:
 
 - Doctor passed and account A is signed in.
@@ -27,8 +35,8 @@ Preconditions:
 
 - **Camera.** Click `scan-isbn`. Wait for `scan-overlay` and `scan-video`. Wait until `scan-status` contains `Found 9780141439518` (the overlay then closes on its own). The dialog `Add a book` shows `isbn-input` containing `9780141439518` and `title-input` matching `/pride|prejudice|austen/i`. Screenshot the overlay when the status says Found, and screenshot the filled form. This is `scan-camera`. If the status stays on `Camera unavailable` or never reports that ISBN, `scan-camera` fails even if `manual-isbn` could have been used.
 - **Save.** Click `save-book`. The card for that title is visible, and `/api/books` plus SQL show ISBN `9780141439518` on A's `owner_id`. Screenshot the shelf.
-- **Manual.** Delete that card so the next save is obvious. Click `scan-isbn` again. Fill `manual-isbn` with `9780451524935` and click `manual-isbn-submit`. The add dialog's title matches `/1984|nineteen/i` and the ISBN field contains `9780451524935`. Close the dialog without saving so the shelf does not have to keep both imports. Screenshot the filled form.
-- **Invalid.** Open scan again. Fill `manual-isbn` with `123` and click `manual-isbn-submit`. `data-testid="scan-error"` reads `Enter a valid ISBN-10 or ISBN-13.` The add dialog is not open. SQL gains no row.
+- **Manual.** Delete that card so the next save is obvious. Click `scan-isbn` again. Fill `manual-isbn` with `9780451524935` and click `manual-isbn-submit`. The add dialog's title matches `/1984|nineteen/i` and the ISBN field contains `9780451524935`. Close the dialog without saving so the shelf does not have to keep both imports. Screenshot the filled form. ISBN-10 `0451524934` uses the same **Use** path and fills `9780451524935`.
+- **Invalid.** Open scan again. With the camera unavailable, `data-testid="scan-error"` first reads `Requested device not found`. Fill `manual-isbn` with `9780451524934` and click `manual-isbn-submit`. `scan-error` then reads `Enter a valid ISBN-10 or ISBN-13.` The overlay stays up and the add dialog stays closed. SQL gains no row. `123` and a 10-digit bad check digit such as `0451524935` show that same error and also leave the form closed.
 - **Proof.** Screenshots of the found barcode, the imported form, the saved card, the manual form, and the invalid error, plus `/api/books` after save and the SQL ISBN row. Directory: `artifacts/verify/<run-id>/scan-isbn/`.
 
 ## Gotchas

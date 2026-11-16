@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { looksLikeIsbn, normalizeIsbn } from "@/lib/isbn";
+import { normalizeIsbn } from "@/lib/isbn";
 
 type BarcodeDetectorLike = {
   detect(source: ImageBitmapSource): Promise<Array<{ rawValue: string }>>;
@@ -205,12 +205,12 @@ export function ScanIsbn({
           className="flex gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!looksLikeIsbn(manual)) {
+            const isbn = normalizeIsbn(manual);
+            if (!isbn) {
               setError("Enter a valid ISBN-10 or ISBN-13.");
               return;
             }
-            const isbn = normalizeIsbn(manual);
-            if (isbn) onDetected(isbn);
+            onDetected(isbn);
           }}
         >
           <Input
